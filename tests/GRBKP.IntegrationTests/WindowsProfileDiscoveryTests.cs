@@ -43,6 +43,29 @@ public sealed class WindowsProfileDiscoveryTests
     }
 
     [Fact]
+    public async Task DiscoverAsync_ClassifiesPortugueseLocalizedSystemFolders_AsTemplateOrSystem()
+    {
+        // Reproduz um C:\Users real de Windows em pt-BR: essas juncoes localizadas nao estavam
+        // na lista original (so inglesas), entao caiam incorretamente em "Suspicious".
+        using var fixture = new TemporaryDirectory();
+        var fileSystem = new WindowsFileSystemAdapter();
+        var volumeRoot = fixture.PathFor("C");
+
+        fixture.CreateProfile(volumeRoot, "Pasta Oficina", withAppData: true);
+        fixture.CreateProfile(volumeRoot, "Todos os Usuários", withAppData: false);
+        fixture.CreateProfile(volumeRoot, "Usuário Padrão", withAppData: false);
+
+        var discovery = new WindowsProfileDiscovery(fileSystem);
+
+        var profiles = await discovery.DiscoverAsync(volumeRoot, CancellationToken.None);
+        var byName = profiles.ToDictionary(p => p.Name);
+
+        Assert.Equal(ProfileClassification.RealProfile, byName["Pasta Oficina"].Classification);
+        Assert.Equal(ProfileClassification.TemplateOrSystem, byName["Todos os Usuários"].Classification);
+        Assert.Equal(ProfileClassification.TemplateOrSystem, byName["Usuário Padrão"].Classification);
+    }
+
+    [Fact]
     public async Task DiscoverAsync_ReturnsEmpty_WhenUsersFolderDoesNotExist()
     {
         using var fixture = new TemporaryDirectory();

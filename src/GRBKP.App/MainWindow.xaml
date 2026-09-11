@@ -62,7 +62,15 @@
                             <TextBlock Text="Informe a unidade do SSD antigo (ex.: F:\)."
                                        Foreground="#FFE5F7FF" FontSize="16" TextAlignment="Center" Margin="0,8,0,16" />
                             <TextBlock Text="Unidade de origem" Foreground="White" FontWeight="SemiBold" Margin="0,0,0,6" />
-                            <TextBox x:Name="SourceVolumeTextBox" Text="F:\" />
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <TextBox x:Name="SourceVolumeTextBox" Text="F:\" />
+                                <Button Grid.Column="1" Style="{StaticResource SecondaryButton}" Content="Procurar…"
+                                        Click="BrowseSourceVolume_Click" Margin="10,0,0,0" Padding="14,8" />
+                            </Grid>
                             <Border Background="#55203D50" CornerRadius="10" Padding="10" Margin="0,10,0,14">
                                 <TextBlock x:Name="BackupSourceStatusText" Foreground="#FFEAF9FF" TextWrapping="Wrap"
                                            Text="Informe a unidade e clique em Buscar perfis." />
@@ -95,7 +103,15 @@
                             <TextBlock Text="Nome da pessoa ou identificação do backup" Foreground="White" FontWeight="SemiBold" Margin="0,0,0,6" />
                             <TextBox x:Name="PersonNameTextBox" MaxLength="80" Margin="0,0,0,10" />
                             <TextBlock Text="Pasta de destino do backup" Foreground="White" FontWeight="SemiBold" Margin="0,0,0,6" />
-                            <TextBox x:Name="BackupDestinationTextBox" Margin="0,0,0,14" />
+                            <Grid Margin="0,0,0,14">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <TextBox x:Name="BackupDestinationTextBox" />
+                                <Button Grid.Column="1" Style="{StaticResource SecondaryButton}" Content="Procurar…"
+                                        Click="BrowseBackupDestination_Click" Margin="10,0,0,0" Padding="14,8" />
+                            </Grid>
                             <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
                                 <Button Style="{StaticResource SecondaryButton}" Content="Voltar"
                                         Click="GoToBackupSource_Click" Margin="0,0,10,0" />
@@ -112,9 +128,25 @@
                             <TextBlock Text="Informe a pasta do backup e o perfil de destino no SSD novo."
                                        Foreground="#FFE5F7FF" FontSize="15" TextAlignment="Center" Margin="0,5,0,18" />
                             <TextBlock Text="Pasta do backup (pacote)" Foreground="White" FontWeight="SemiBold" Margin="0,0,0,6" />
-                            <TextBox x:Name="RestorePackageTextBox" Margin="0,0,0,14" />
+                            <Grid Margin="0,0,0,14">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <TextBox x:Name="RestorePackageTextBox" />
+                                <Button Grid.Column="1" Style="{StaticResource SecondaryButton}" Content="Procurar…"
+                                        Click="BrowseRestorePackage_Click" Margin="10,0,0,0" Padding="14,8" />
+                            </Grid>
                             <TextBlock Text="Pasta do perfil de destino" Foreground="White" FontWeight="SemiBold" Margin="0,0,0,6" />
-                            <TextBox x:Name="RestoreDestinationTextBox" Margin="0,0,0,10" />
+                            <Grid Margin="0,0,0,10">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <TextBox x:Name="RestoreDestinationTextBox" />
+                                <Button Grid.Column="1" Style="{StaticResource SecondaryButton}" Content="Procurar…"
+                                        Click="BrowseRestoreDestination_Click" Margin="10,0,0,0" Padding="14,8" />
+                            </Grid>
                             <Border Background="#55203D50" CornerRadius="10" Padding="10" Margin="0,0,0,14">
                                 <TextBlock x:Name="RestoreSourceStatusText" Foreground="#FFEAF9FF" TextWrapping="Wrap"
                                            Text="Informe as duas pastas e clique em Prosseguir." />

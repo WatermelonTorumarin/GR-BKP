@@ -33,11 +33,14 @@ public sealed class WindowsProfileDiscovery(IFileSystemAdapter fileSystem)
 
     /// <summary>
     /// Nomes de pasta que o proprio Windows usa para perfis-molde/sistema, nunca funcionarios
-    /// reais — mesmo quando tecnicamente contem uma subpasta AppData (ex.: "Default").
+    /// reais — mesmo quando tecnicamente contem uma subpasta AppData (ex.: "Default"). Inclui as
+    /// junctions localizadas em portugues que um Windows em pt-BR cria dentro de Users
+    /// (confirmado num C:\Users real: "Todos os Usuários" -> ProgramData, "Usuário Padrão" -> Default).
     /// </summary>
     private static readonly HashSet<string> TemplateOrSystemNames = new(StringComparer.OrdinalIgnoreCase)
     {
-        "Default", "Default User", "Public", "All Users", "defaultuser0", "WDAGUtilityAccount"
+        "Default", "Default User", "Public", "All Users", "defaultuser0", "WDAGUtilityAccount",
+        "Todos os Usuários", "Usuário Padrão", "Padrão"
     };
 
     public async Task<IReadOnlyList<DiscoveredProfile>> DiscoverAsync(

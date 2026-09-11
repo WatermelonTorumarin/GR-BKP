@@ -67,6 +67,32 @@ public partial class MainWindow : Window
 
     private void GoToRestoreSource_Click(object sender, RoutedEventArgs e) => ShowPage(RestoreSourcePage);
 
+    private void BrowseSourceVolume_Click(object sender, RoutedEventArgs e) =>
+        BrowseFolder(SourceVolumeTextBox, "Selecione a unidade ou pasta do SSD antigo");
+
+    private void BrowseBackupDestination_Click(object sender, RoutedEventArgs e) =>
+        BrowseFolder(BackupDestinationTextBox, "Selecione a pasta onde o backup será salvo");
+
+    private void BrowseRestorePackage_Click(object sender, RoutedEventArgs e) =>
+        BrowseFolder(RestorePackageTextBox, "Selecione a pasta do backup (pacote)");
+
+    private void BrowseRestoreDestination_Click(object sender, RoutedEventArgs e) =>
+        BrowseFolder(RestoreDestinationTextBox, "Selecione a pasta do perfil de destino");
+
+    private void BrowseFolder(TextBox target, string title)
+    {
+        var dialog = new Microsoft.Win32.OpenFolderDialog { Title = title };
+        if (Directory.Exists(target.Text))
+        {
+            dialog.InitialDirectory = target.Text;
+        }
+
+        if (dialog.ShowDialog(this) == true)
+        {
+            target.Text = dialog.FolderName;
+        }
+    }
+
     private void ShowPage(UIElement page)
     {
         foreach (var candidate in new UIElement[]
@@ -135,8 +161,11 @@ public partial class MainWindow : Window
             var profiles = await profileDiscovery.DiscoverAsync(volumeRoot);
             if (profiles.Count == 0)
             {
-                BackupSourceStatusText.Text =
-                    $"Nenhuma pasta encontrada em {Path.Combine(volumeRoot, "Users")}.";
+                BackupSourceStatusText.Text = LooksLikeAProfileFolderItself(volumeRoot)
+                    ? $"{volumeRoot} parece ser a pasta de UM perfil, não a raiz do disco. " +
+                      $"Informe a unidade (ex.: {Path.GetPathRoot(volumeRoot)}) para que o app " +
+                      "encontre todos os perfis dentro de Users."
+                    : $"Nenhuma pasta encontrada em {Path.Combine(volumeRoot, "Users")}.";
                 return;
             }
 
@@ -153,6 +182,16 @@ public partial class MainWindow : Window
             SearchProfilesButton.IsEnabled = true;
         }
     }
+
+    /// <summary>
+    /// Deteccao heuristica para o erro mais comum ao testar: apontar direto para a pasta de UM
+    /// perfil (ex.: C:\Users\Fulano) em vez da raiz do disco (C:\) — o app sempre busca
+    /// "&lt;o que foi digitado&gt;\Users", entao esse engano resulta em "nada encontrado" sem
+    /// explicar por que.
+    /// </summary>
+    private static bool LooksLikeAProfileFolderItself(string candidatePath) =>
+        File.Exists(Path.Combine(candidatePath, "NTUSER.DAT")) ||
+        Directory.Exists(Path.Combine(candidatePath, "AppData"));
 
     private void PopulateProfileList(IReadOnlyList<DiscoveredProfile> profiles)
     {
