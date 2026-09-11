@@ -16,12 +16,17 @@ public sealed class ThunderbirdMigrationModule(
     IFileSystemAdapter fileSystem,
     IProcessAdapter processAdapter) : IMigrationModule
 {
-    private const string ThunderbirdRelativeSegments1 = "AppData";
-    private const string ThunderbirdRelativeSegments2 = "Roaming";
-    private const string ThunderbirdRelativeSegments3 = "Thunderbird";
     private const string ProfilesIniFileName = "profiles.ini";
     private const string PackageModuleSubpath = "modules/thunderbird/root";
     private static readonly string[] ProcessNames = ["thunderbird"];
+
+    /// <summary>
+    /// Caminho do AppData deste app, relativo a raiz do perfil — publico para que a politica de
+    /// selecao generica (SelectionPolicyModule) saiba excluir esta subarvore da varredura de
+    /// AppData nao classificado, evitando capturar os mesmos arquivos duas vezes.
+    /// </summary>
+    public static readonly IReadOnlyList<string> AppDataRelativeSegments =
+        ["AppData", "Roaming", "Thunderbird"];
 
     public string Id => "thunderbird";
 
@@ -29,11 +34,7 @@ public sealed class ThunderbirdMigrationModule(
     {
         ArgumentNullException.ThrowIfNull(context);
 
-        var thunderbirdRoot = Path.Combine(
-            context.SourceRoot,
-            ThunderbirdRelativeSegments1,
-            ThunderbirdRelativeSegments2,
-            ThunderbirdRelativeSegments3);
+        var thunderbirdRoot = Path.Combine([context.SourceRoot, .. AppDataRelativeSegments]);
         var profilesIniPath = Path.Combine(thunderbirdRoot, ProfilesIniFileName);
         var info = await context.FileSystem.GetInfoAsync(profilesIniPath, ct).ConfigureAwait(false);
         if (info is null)
@@ -94,10 +95,7 @@ public sealed class ThunderbirdMigrationModule(
         await processAdapter.TerminateProcessTreesAsync(ProcessNames, ct).ConfigureAwait(false);
 
         var destinationRoot = Path.Combine(
-            context.DestinationProfileRoot,
-            ThunderbirdRelativeSegments1,
-            ThunderbirdRelativeSegments2,
-            ThunderbirdRelativeSegments3);
+            [context.DestinationProfileRoot, .. AppDataRelativeSegments]);
         var packageModulePath = Path.Combine(
             context.PackageRoot,
             "modules", "thunderbird", "root");

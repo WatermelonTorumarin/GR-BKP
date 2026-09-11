@@ -106,6 +106,40 @@ public sealed class SelectionPolicyTests
         Assert.Equal(30_000, fileSystem.GeneratedEntriesYielded);
     }
 
+    [Fact]
+    public async Task AppDataScan_ExcludesKnownAppFootprints_ToAvoidDuplicatingModuleData()
+    {
+        // O SelectionPolicyModule varre AppData inteiro como fallback generico, mas apps que
+        // ja tem um IMigrationModule real (Thunderbird, Firefox, Chrome, Edge) capturam sua
+        // propria subarvore separadamente com classificacao ModuleData. Sem essa exclusao, os
+        // mesmos arquivos entrariam duas vezes no pacote — uma pelo Module, outra por aqui.
+        var fileSystem = new SelectionFileSystemFake();
+        var profileRoot = @"E:\Users\Ana";
+        fileSystem.AddRegularFile(
+            Path.Combine(profileRoot, "AppData", "Roaming"),
+            "Thunderbird/profiles.ini");
+        fileSystem.AddRegularFile(
+            Path.Combine(profileRoot, "AppData", "Roaming"),
+            "Thunderbird/Profiles/abc.default/prefs.js");
+        fileSystem.AddRegularFile(
+            Path.Combine(profileRoot, "AppData", "Roaming"),
+            "OutroApp/config.dat");
+        var sut = new SelectionPolicyModule(
+            fileSystem,
+            excludedAppDataRelativePaths: ["AppData/Roaming/Thunderbird"]);
+
+        var run = sut.Select(new ProfileSelection("Ana", profileRoot, null));
+        var items = await CollectAsync(run.Items);
+        var appDataItems = items
+            .Where(item => item.Classification == TransferClassification.UnclassifiedApplicationData)
+            .ToList();
+
+        Assert.DoesNotContain(appDataItems, item =>
+            item.PackageRelativePath.Contains("/Thunderbird/", StringComparison.Ordinal));
+        Assert.Contains(appDataItems, item =>
+            item.PackageRelativePath.EndsWith("/OutroApp/config.dat", StringComparison.Ordinal));
+    }
+
     private static async Task<List<T>> CollectAsync<T>(IAsyncEnumerable<T> source)
     {
         var result = new List<T>();

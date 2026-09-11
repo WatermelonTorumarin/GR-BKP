@@ -15,13 +15,17 @@ public sealed class FirefoxMigrationModule(
     IFileSystemAdapter fileSystem,
     IProcessAdapter processAdapter) : IMigrationModule
 {
-    private const string FirefoxRelativeSegments1 = "AppData";
-    private const string FirefoxRelativeSegments2 = "Roaming";
-    private const string FirefoxRelativeSegments3 = "Mozilla";
-    private const string FirefoxRelativeSegments4 = "Firefox";
     private const string ProfilesIniFileName = "profiles.ini";
     private const string PackageModuleSubpath = "modules/firefox/root";
     private static readonly string[] ProcessNames = ["firefox"];
+
+    /// <summary>
+    /// Caminho do AppData deste app, relativo a raiz do perfil — publico para que a politica de
+    /// selecao generica (SelectionPolicyModule) saiba excluir esta subarvore da varredura de
+    /// AppData nao classificado, evitando capturar os mesmos arquivos duas vezes.
+    /// </summary>
+    public static readonly IReadOnlyList<string> AppDataRelativeSegments =
+        ["AppData", "Roaming", "Mozilla", "Firefox"];
 
     public string Id => "firefox";
 
@@ -29,12 +33,7 @@ public sealed class FirefoxMigrationModule(
     {
         ArgumentNullException.ThrowIfNull(context);
 
-        var firefoxRoot = Path.Combine(
-            context.SourceRoot,
-            FirefoxRelativeSegments1,
-            FirefoxRelativeSegments2,
-            FirefoxRelativeSegments3,
-            FirefoxRelativeSegments4);
+        var firefoxRoot = Path.Combine([context.SourceRoot, .. AppDataRelativeSegments]);
         var profilesIniPath = Path.Combine(firefoxRoot, ProfilesIniFileName);
         var info = await context.FileSystem.GetInfoAsync(profilesIniPath, ct).ConfigureAwait(false);
         if (info is null)
@@ -93,11 +92,7 @@ public sealed class FirefoxMigrationModule(
         await processAdapter.TerminateProcessTreesAsync(ProcessNames, ct).ConfigureAwait(false);
 
         var destinationRoot = Path.Combine(
-            context.DestinationProfileRoot,
-            FirefoxRelativeSegments1,
-            FirefoxRelativeSegments2,
-            FirefoxRelativeSegments3,
-            FirefoxRelativeSegments4);
+            [context.DestinationProfileRoot, .. AppDataRelativeSegments]);
         var packageModulePath = Path.Combine(
             context.PackageRoot,
             "modules", "firefox", "root");

@@ -33,4 +33,18 @@ public static class MigrationModuleCatalog
             [edge.Id] = edge
         };
     }
+
+    /// <summary>
+    /// Caminhos de AppData (relativos a raiz do perfil, com "/" como separador) que cada Module
+    /// implementado ja captura por conta propria. A politica de selecao generica precisa desta
+    /// lista para nao varrer e empacotar os mesmos arquivos duas vezes — uma como ModuleData
+    /// (pelo Module) e outra como UnclassifiedApplicationData (pela varredura generica).
+    /// </summary>
+    public static IReadOnlyList<string> KnownAppDataFootprints() =>
+    [
+        string.Join('/', Thunderbird.ThunderbirdMigrationModule.AppDataRelativeSegments),
+        string.Join('/', Firefox.FirefoxMigrationModule.AppDataRelativeSegments),
+        string.Join('/', Chromium.ChromiumBrowserDescriptor.Chrome.AppDataRelativeSegments),
+        string.Join('/', Chromium.ChromiumBrowserDescriptor.Edge.AppDataRelativeSegments)
+    ];
 }

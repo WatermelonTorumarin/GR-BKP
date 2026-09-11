@@ -4,9 +4,14 @@ using GRBKP.Core.Modules;
 
 namespace GRBKP.Core.Selection;
 
-public sealed class SelectionPolicyModule(IFileSystemAdapter fileSystem)
+public sealed class SelectionPolicyModule(
+    IFileSystemAdapter fileSystem,
+    IReadOnlyList<string>? excludedAppDataRelativePaths = null)
 {
     public const int PicturesThreshold = 21;
+
+    private readonly IReadOnlyList<string> excludedAppDataRelativePaths =
+        excludedAppDataRelativePaths ?? [];
 
     public SelectionRun Select(ProfileSelection selection)
     {
@@ -103,6 +108,13 @@ public sealed class SelectionPolicyModule(IFileSystemAdapter fileSystem)
                 .ConfigureAwait(false))
             {
                 if (!IsEligibleLocalFile(entry))
+                {
+                    continue;
+                }
+
+                var relativeFromProfile =
+                    $"AppData/{appDataPart}/{Path.GetRelativePath(root, entry.FullPath).Replace('\\', '/')}";
+                if (IsWithinExcludedAppDataPath(relativeFromProfile))
                 {
                     continue;
                 }
@@ -213,6 +225,20 @@ public sealed class SelectionPolicyModule(IFileSystemAdapter fileSystem)
                 entry.CreationTimeUtc,
                 entry.LastWriteTimeUtc,
                 entry.Attributes));
+    }
+
+    private bool IsWithinExcludedAppDataPath(string relativeFromProfile)
+    {
+        foreach (var excluded in excludedAppDataRelativePaths)
+        {
+            if (relativeFromProfile.Equals(excluded, StringComparison.OrdinalIgnoreCase) ||
+                relativeFromProfile.StartsWith(excluded + "/", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static bool IsEligibleLocalFile(FileSystemEntry entry) =>
