@@ -2,6 +2,10 @@
 
   <ItemGroup>
     <ProjectReference Include="..\GRBKP.Core\GRBKP.Core.csproj" />
+    <!-- Pacote oficial do time .NET (dotnet/runtime), nao dependencia de terceiros — e a unica
+         forma suportada de controlar servicos do Windows a partir do .NET moderno; nao vem
+         embutido no net10.0-windows como as extensoes de ACL do System.IO vem. -->
+    <PackageReference Include="System.ServiceProcess.ServiceController" Version="9.0.0" />
   </ItemGroup>
 
   <PropertyGroup>
