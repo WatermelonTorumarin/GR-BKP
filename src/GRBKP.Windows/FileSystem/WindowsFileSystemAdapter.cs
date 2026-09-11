@@ -14,24 +14,38 @@ public sealed class WindowsFileSystemAdapter : IFileSystemAdapter
             yield break;
         }
 
-        var options = new EnumerationOptions
-        {
-            RecurseSubdirectories = true,
-            IgnoreInaccessible = false,
-            ReturnSpecialDirectories = false,
-            AttributesToSkip = 0
-        };
         var yielded = 0;
-        foreach (var path in Directory.EnumerateFiles(rootPath, "*", options))
+        foreach (var path in EnumerateFilePathsRecursive(rootPath))
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var info = new FileInfo(path);
-            var attributes = info.Attributes;
+
+            FileInfo info;
+            long length;
+            DateTime creationUtc;
+            DateTime lastWriteUtc;
+            FileAttributes attributes;
+            try
+            {
+                info = new FileInfo(path);
+                length = info.Length;
+                creationUtc = info.CreationTimeUtc;
+                lastWriteUtc = info.LastWriteTimeUtc;
+                attributes = info.Attributes;
+            }
+            catch (Exception exception) when (
+                exception is IOException or UnauthorizedAccessException)
+            {
+                // Arquivo pode ter sido removido/bloqueado entre a listagem e a leitura de
+                // metadados (ex.: antivirus, sincronizacao). Um arquivo nao deve derrubar todo
+                // o backup — fica de fora desta enumeracao, sem interromper o restante.
+                continue;
+            }
+
             yield return new FileSystemEntry(
                 info.FullName,
-                info.Length,
-                info.CreationTimeUtc,
-                info.LastWriteTimeUtc,
+                length,
+                creationUtc,
+                lastWriteUtc,
                 attributes,
                 IsCloudPlaceholder: IsCloudPlaceholder(attributes),
                 IsReparsePoint: attributes.HasFlag(FileAttributes.ReparsePoint));
@@ -40,6 +54,69 @@ public sealed class WindowsFileSystemAdapter : IFileSystemAdapter
             if ((yielded & 255) == 0)
             {
                 await Task.Yield();
+            }
+        }
+    }
+
+    /// <summary>
+    /// Caminha a arvore manualmente (em vez de <c>Directory.EnumerateFiles(..., RecurseSubdirectories: true)</c>)
+    /// por dois motivos observados num Windows real em pt-BR: (1) pastas como "Meus Vídeos" dentro
+    /// de Documentos sao junctions/reparse points que derrubavam o backup inteiro com
+    /// UnauthorizedAccessException ao serem varridas — nunca devem ser seguidas, so ignoradas;
+    /// (2) uma unica subpasta sem permissao de leitura (ACL, antivirus) nao deve interromper a
+    /// enumeracao do resto da arvore.
+    /// </summary>
+    private static IEnumerable<string> EnumerateFilePathsRecursive(string directory)
+    {
+        string[] files;
+        try
+        {
+            files = Directory.GetFiles(directory);
+        }
+        catch (Exception exception) when (
+            exception is IOException or UnauthorizedAccessException)
+        {
+            files = [];
+        }
+
+        foreach (var file in files)
+        {
+            yield return file;
+        }
+
+        string[] subdirectories;
+        try
+        {
+            subdirectories = Directory.GetDirectories(directory);
+        }
+        catch (Exception exception) when (
+            exception is IOException or UnauthorizedAccessException)
+        {
+            subdirectories = [];
+        }
+
+        foreach (var subdirectory in subdirectories)
+        {
+            bool isReparsePoint;
+            try
+            {
+                isReparsePoint = new DirectoryInfo(subdirectory).Attributes
+                    .HasFlag(FileAttributes.ReparsePoint);
+            }
+            catch (Exception exception) when (
+                exception is IOException or UnauthorizedAccessException)
+            {
+                continue;
+            }
+
+            if (isReparsePoint)
+            {
+                continue;
+            }
+
+            foreach (var file in EnumerateFilePathsRecursive(subdirectory))
+            {
+                yield return file;
             }
         }
     }

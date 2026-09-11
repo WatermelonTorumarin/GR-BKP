@@ -267,6 +267,13 @@ public partial class MainWindow : Window
                 Margin = new Thickness(4, 6, 4, 6),
                 Opacity = isSelectable ? 1.0 : 0.55
             };
+            if (isSelectable)
+            {
+                // Nome padrao do backup = nome do perfil selecionado, mas continua editavel —
+                // atualiza se o tecnico trocar de perfil antes de digitar algo proprio.
+                radioButton.Checked += (_, _) => PersonNameTextBox.Text = profile.Name;
+            }
+
             ProfileListPanel.Children.Add(radioButton);
             profileOptions.Add((profile, radioButton));
         }
