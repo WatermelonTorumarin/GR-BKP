@@ -1,6 +1,7 @@
 using System.Text;
 using GRBKP.Core.Adapters;
 using GRBKP.Core.Modules;
+using GRBKP.Core.Modules.Mozilla;
 using GRBKP.Core.Modules.Thunderbird;
 using GRBKP.Core.Operations;
 using GRBKP.Core.Orchestration;
@@ -116,7 +117,7 @@ public sealed class MigrationOrchestratorRestoreTests
         // Efeito 2: o Module do Thunderbird foi realmente acionado — nao apenas "preservado".
         var destinationThunderbirdRoot = Path.Combine(
             destinationProfileRoot, "AppData", "Roaming", "Thunderbird");
-        var reboundIni = ThunderbirdProfilesIni.Parse(
+        var reboundIni = MozillaProfilesIni.Parse(
             File.ReadAllText(Path.Combine(destinationThunderbirdRoot, "profiles.ini")));
         Assert.Equal("InstallBBBB2222BBBB2222", reboundIni.FindInstallSectionName());
         var restoredMailPath = Path.Combine(

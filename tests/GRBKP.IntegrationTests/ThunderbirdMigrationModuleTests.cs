@@ -1,6 +1,7 @@
 using System.Text;
 using GRBKP.Core.Adapters;
 using GRBKP.Core.Modules;
+using GRBKP.Core.Modules.Mozilla;
 using GRBKP.Core.Modules.Thunderbird;
 using GRBKP.Core.Operations;
 using GRBKP.Windows.FileSystem;
@@ -120,7 +121,7 @@ public sealed class ThunderbirdMigrationModuleTests
         var destinationThunderbirdRoot = Path.Combine(
             destinationProfileRoot,
             "AppData", "Roaming", "Thunderbird");
-        var reboundIni = ThunderbirdProfilesIni.Parse(
+        var reboundIni = MozillaProfilesIni.Parse(
             File.ReadAllText(Path.Combine(destinationThunderbirdRoot, "profiles.ini")));
 
         // A prova de que o bug foi corrigido: a secao Install da instalacao NOVA (destino) agora

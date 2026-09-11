@@ -1,6 +1,7 @@
 using System.Runtime.CompilerServices;
 using GRBKP.Core.Adapters;
 using GRBKP.Core.Restore;
+using GRBKP.Core.Modules.Mozilla;
 
 namespace GRBKP.Core.Modules.Thunderbird;
 
@@ -40,7 +41,7 @@ public sealed class ThunderbirdMigrationModule(
             return new ModuleDiscovery(Id, false, new Dictionary<string, string?>());
         }
 
-        var ini = ThunderbirdProfilesIni.Parse(
+        var ini = MozillaProfilesIni.Parse(
             await ReadAllTextAsync(context.FileSystem, profilesIniPath, ct).ConfigureAwait(false));
         var defaultProfilePath = ini.ResolveDefaultProfilePath();
 
@@ -143,7 +144,7 @@ public sealed class ThunderbirdMigrationModule(
             return Invalid("profiles-ini-missing", "profiles.ini ausente após a restauração.");
         }
 
-        var ini = ThunderbirdProfilesIni.Parse(
+        var ini = MozillaProfilesIni.Parse(
             await ReadAllTextAsync(context.FileSystem, profilesIniPath, ct).ConfigureAwait(false));
         var defaultProfilePath = ini.ResolveDefaultProfilePath();
         if (defaultProfilePath is null)
@@ -189,7 +190,7 @@ public sealed class ThunderbirdMigrationModule(
             return null;
         }
 
-        var ini = ThunderbirdProfilesIni.Parse(
+        var ini = MozillaProfilesIni.Parse(
             await ReadAllTextAsync(targetFileSystem, profilesIniPath, ct).ConfigureAwait(false));
         return ini.FindInstallSectionName();
     }
@@ -207,7 +208,7 @@ public sealed class ThunderbirdMigrationModule(
             return;
         }
 
-        var recovered = ThunderbirdProfilesIni.Parse(
+        var recovered = MozillaProfilesIni.Parse(
             await ReadAllTextAsync(targetFileSystem, profilesIniPath, ct).ConfigureAwait(false));
         var defaultProfilePath = recovered.ResolveDefaultProfilePath();
         if (defaultProfilePath is null)

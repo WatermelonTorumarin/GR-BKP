@@ -1,21 +1,22 @@
 using System.Text;
 
-namespace GRBKP.Core.Modules.Thunderbird;
+namespace GRBKP.Core.Modules.Mozilla;
 
 /// <summary>
-/// Modelo minimo do <c>profiles.ini</c> do Thunderbird, suficiente para resolver e reescrever
-/// o perfil padrao. Desde o Thunderbird 68, cada instalacao ("Install&lt;ID&gt;") tem seu proprio
-/// perfil padrao dedicado — copiar o profiles.ini antigo por cima nao ativa o perfil recuperado
-/// na instalacao nova, porque o Install ID antigo nao corresponde ao da instalacao nova. Essa
-/// classe existe para corrigir exatamente isso.
+/// Modelo minimo do <c>profiles.ini</c> do gerenciador de perfis da Mozilla, compartilhado por
+/// Thunderbird e Firefox — suficiente para resolver e reescrever o perfil padrao. Desde a
+/// adocao do profile manager dedicado por instalacao, cada instalacao ("Install&lt;ID&gt;") tem
+/// seu proprio perfil padrao — copiar o profiles.ini antigo por cima nao ativa o perfil
+/// recuperado na instalacao nova, porque o Install ID antigo nao corresponde ao da instalacao
+/// nova. Essa classe existe para corrigir exatamente isso.
 /// </summary>
-public sealed class ThunderbirdProfilesIni
+public sealed class MozillaProfilesIni
 {
     private readonly List<IniSection> sections;
 
-    private ThunderbirdProfilesIni(List<IniSection> sections) => this.sections = sections;
+    private MozillaProfilesIni(List<IniSection> sections) => this.sections = sections;
 
-    public static ThunderbirdProfilesIni Parse(string text)
+    public static MozillaProfilesIni Parse(string text)
     {
         var sections = new List<IniSection>();
         IniSection? current = null;
@@ -45,7 +46,7 @@ public sealed class ThunderbirdProfilesIni
             current.Set(trimmed[..separatorIndex].Trim(), trimmed[(separatorIndex + 1)..].Trim());
         }
 
-        return new ThunderbirdProfilesIni(sections);
+        return new MozillaProfilesIni(sections);
     }
 
     /// <summary>
@@ -84,7 +85,7 @@ public sealed class ThunderbirdProfilesIni
     /// e <c>Locked=1</c>. As demais secoes (incluindo as entradas Profile com os dados do perfil) sao
     /// preservadas inalteradas.
     /// </summary>
-    public ThunderbirdProfilesIni WithInstallDefault(string installSectionName, string defaultProfileRelativePath)
+    public MozillaProfilesIni WithInstallDefault(string installSectionName, string defaultProfileRelativePath)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(installSectionName);
         ArgumentException.ThrowIfNullOrWhiteSpace(defaultProfileRelativePath);
@@ -102,7 +103,7 @@ public sealed class ThunderbirdProfilesIni
         installSection.Set("Locked", "1");
         updatedSections.Add(installSection);
 
-        return new ThunderbirdProfilesIni(updatedSections);
+        return new MozillaProfilesIni(updatedSections);
     }
 
     public string Serialize()

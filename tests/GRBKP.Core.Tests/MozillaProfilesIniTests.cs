@@ -1,8 +1,8 @@
-using GRBKP.Core.Modules.Thunderbird;
+using GRBKP.Core.Modules.Mozilla;
 
 namespace GRBKP.Core.Tests;
 
-public sealed class ThunderbirdProfilesIniTests
+public sealed class MozillaProfilesIniTests
 {
     private const string LegacyProfilesIni = """
         [General]
@@ -35,7 +35,7 @@ public sealed class ThunderbirdProfilesIniTests
     [Fact]
     public void ResolveDefaultProfilePath_PrefersInstallScopedDefault_OverLegacyProfileFlag()
     {
-        var ini = ThunderbirdProfilesIni.Parse(LegacyProfilesIni);
+        var ini = MozillaProfilesIni.Parse(LegacyProfilesIni);
 
         Assert.Equal("Profiles/78ypv6h6.default-release", ini.ResolveDefaultProfilePath());
         Assert.Equal("Install4A1B2C3D4E5F6789", ini.FindInstallSectionName());
@@ -44,7 +44,7 @@ public sealed class ThunderbirdProfilesIniTests
     [Fact]
     public void ResolveDefaultProfilePath_FallsBackToLegacyProfileFlag_WhenNoInstallSectionExists()
     {
-        var ini = ThunderbirdProfilesIni.Parse(LegacyProfilesIniWithoutInstallSection);
+        var ini = MozillaProfilesIni.Parse(LegacyProfilesIniWithoutInstallSection);
 
         Assert.Equal("Profiles/78ypv6h6.default-release", ini.ResolveDefaultProfilePath());
         Assert.Null(ini.FindInstallSectionName());
@@ -57,7 +57,7 @@ public sealed class ThunderbirdProfilesIniTests
         // instalacao ANTIGA do Thunderbird. A instalacao NOVA (destino) tem seu proprio Install ID
         // e ignora esse Default antigo, abrindo um perfil vazio. A correcao precisa reescrever a
         // secao Install usando o ID que a instalacao NOVA ja usa, apontando para o perfil recuperado.
-        var recovered = ThunderbirdProfilesIni.Parse(LegacyProfilesIni);
+        var recovered = MozillaProfilesIni.Parse(LegacyProfilesIni);
         var newInstallId = "Install9F8E7D6C5B4A3210";
 
         var rebound = recovered.WithInstallDefault(newInstallId, "Profiles/78ypv6h6.default-release");
@@ -65,7 +65,7 @@ public sealed class ThunderbirdProfilesIniTests
         Assert.Equal("Profiles/78ypv6h6.default-release", rebound.ResolveDefaultProfilePath());
         Assert.Equal(newInstallId, rebound.FindInstallSectionName());
 
-        var reparsed = ThunderbirdProfilesIni.Parse(rebound.Serialize());
+        var reparsed = MozillaProfilesIni.Parse(rebound.Serialize());
         Assert.Equal("Profiles/78ypv6h6.default-release", reparsed.ResolveDefaultProfilePath());
         Assert.Equal(newInstallId, reparsed.FindInstallSectionName());
         Assert.Contains("Profile0", rebound.Serialize());
