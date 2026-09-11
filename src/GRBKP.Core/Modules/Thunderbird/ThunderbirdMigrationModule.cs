@@ -11,13 +11,16 @@ namespace GRBKP.Core.Modules.Thunderbird;
 /// e reescrito para que a secao Install da instalacao NOVA (destino) aponte para o perfil
 /// recuperado, em vez de manter o Install ID da instalacao antiga (que a instalacao nova ignora).
 /// </summary>
-public sealed class ThunderbirdMigrationModule(IFileSystemAdapter fileSystem) : IMigrationModule
+public sealed class ThunderbirdMigrationModule(
+    IFileSystemAdapter fileSystem,
+    IProcessAdapter processAdapter) : IMigrationModule
 {
     private const string ThunderbirdRelativeSegments1 = "AppData";
     private const string ThunderbirdRelativeSegments2 = "Roaming";
     private const string ThunderbirdRelativeSegments3 = "Thunderbird";
     private const string ProfilesIniFileName = "profiles.ini";
     private const string PackageModuleSubpath = "modules/thunderbird/root";
+    private static readonly string[] ProcessNames = ["thunderbird"];
 
     public string Id => "thunderbird";
 
@@ -82,6 +85,12 @@ public sealed class ThunderbirdMigrationModule(IFileSystemAdapter fileSystem) : 
     public async Task<ModuleResult> RestoreAsync(RestoreContext context, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(context);
+
+        // Decisao Q64: encerrar a forca ja na primeira etapa, antes de qualquer outra coisa —
+        // nao tentar fechamento gracioso primeiro. O Thunderbird pode reescrever prefs.js ou
+        // manter arquivos de mensagens abertos ao sair, o que corromperia a troca de arvore
+        // se ainda estivesse rodando durante a copia/staging.
+        await processAdapter.TerminateProcessTreesAsync(ProcessNames, ct).ConfigureAwait(false);
 
         var destinationRoot = Path.Combine(
             context.DestinationProfileRoot,

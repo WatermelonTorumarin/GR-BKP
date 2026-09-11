@@ -19,7 +19,8 @@ public sealed class ThunderbirdMigrationModuleTests
             installId: "Install4A1B2C3D4E5F6789",
             profileFolder: "78ypv6h6.default-release",
             mailContent: "De: chefe@ravelfiat.com.br\nAssunto: importante");
-        var module = new ThunderbirdMigrationModule(fileSystem);
+        var processAdapter = new RecordingProcessAdapter();
+        var module = new ThunderbirdMigrationModule(fileSystem, processAdapter);
 
         var discovery = await module.DiscoverAsync(
             new MigrationContext(sourceRoot, "auxatc", fileSystem),
@@ -37,7 +38,8 @@ public sealed class ThunderbirdMigrationModuleTests
         using var fixture = new TemporaryDirectory();
         var fileSystem = new WindowsFileSystemAdapter();
         var sourceRoot = fixture.CreateTree("no-thunderbird/Users/auxatc");
-        var module = new ThunderbirdMigrationModule(fileSystem);
+        var processAdapter = new RecordingProcessAdapter();
+        var module = new ThunderbirdMigrationModule(fileSystem, processAdapter);
 
         var discovery = await module.DiscoverAsync(
             new MigrationContext(sourceRoot, "auxatc", fileSystem),
@@ -72,7 +74,8 @@ public sealed class ThunderbirdMigrationModuleTests
             profileFolder: "k2n5x8qw.default-release",
             mailContent: null);
 
-        var module = new ThunderbirdMigrationModule(fileSystem);
+        var processAdapter = new RecordingProcessAdapter();
+        var module = new ThunderbirdMigrationModule(fileSystem, processAdapter);
         var discovery = await module.DiscoverAsync(
             new MigrationContext(sourceRoot, "auxatc", fileSystem),
             CancellationToken.None);
@@ -112,6 +115,7 @@ public sealed class ThunderbirdMigrationModuleTests
         var result = await module.RestoreAsync(restoreContext, CancellationToken.None);
 
         Assert.Equal(ModuleOutcome.Applied, result.Outcome);
+        Assert.Contains("thunderbird", processAdapter.TerminatedProcessNames);
 
         var destinationThunderbirdRoot = Path.Combine(
             destinationProfileRoot,
@@ -157,7 +161,8 @@ public sealed class ThunderbirdMigrationModuleTests
             profileFolder: "novo.default-release",
             mailContent: null);
 
-        var module = new ThunderbirdMigrationModule(fileSystem);
+        var processAdapter = new RecordingProcessAdapter();
+        var module = new ThunderbirdMigrationModule(fileSystem, processAdapter);
         var discovery = await module.DiscoverAsync(
             new MigrationContext(sourceRoot, "auxatc", fileSystem),
             CancellationToken.None);
@@ -204,6 +209,19 @@ public sealed class ThunderbirdMigrationModuleTests
         Assert.False(Directory.Exists(Path.Combine(
             destinationThunderbirdRoot,
             "Profiles", "corrupt.default-release")));
+    }
+
+    private sealed class RecordingProcessAdapter : IProcessAdapter
+    {
+        public List<string> TerminatedProcessNames { get; } = [];
+
+        public Task TerminateProcessTreesAsync(
+            IReadOnlyCollection<string> processNames,
+            CancellationToken cancellationToken = default)
+        {
+            TerminatedProcessNames.AddRange(processNames);
+            return Task.CompletedTask;
+        }
     }
 
     private sealed class TemporaryDirectory : IDisposable

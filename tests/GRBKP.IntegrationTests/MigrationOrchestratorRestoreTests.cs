@@ -45,7 +45,7 @@ public sealed class MigrationOrchestratorRestoreTests
             profileFolder: "dst7h4p.default-release",
             mailContent: null);
 
-        var thunderbirdModule = new ThunderbirdMigrationModule(fileSystem);
+        var thunderbirdModule = new ThunderbirdMigrationModule(fileSystem, new NoOpProcessAdapter());
         var discovery = await thunderbirdModule.DiscoverAsync(
             new MigrationContext(sourceProfileRoot, "auxatc", fileSystem),
             CancellationToken.None);
@@ -151,6 +151,13 @@ public sealed class MigrationOrchestratorRestoreTests
     private sealed class FixedClock(DateTimeOffset utcNow) : IClock
     {
         public DateTimeOffset UtcNow { get; } = utcNow;
+    }
+
+    private sealed class NoOpProcessAdapter : IProcessAdapter
+    {
+        public Task TerminateProcessTreesAsync(
+            IReadOnlyCollection<string> processNames,
+            CancellationToken cancellationToken = default) => Task.CompletedTask;
     }
 
     private sealed class TemporaryDirectory : IDisposable
