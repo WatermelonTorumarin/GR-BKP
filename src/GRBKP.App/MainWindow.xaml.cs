@@ -21,6 +21,13 @@ namespace GRBKP.App;
 
 public partial class MainWindow : Window
 {
+    /// <summary>
+    /// Rotulo do SSD externo onde o app roda na empresa — o padrao de destino/origem de backup
+    /// aponta pra ele automaticamente. Buscado por rotulo de volume, nao por letra de unidade,
+    /// porque a letra muda de computador para computador.
+    /// </summary>
+    private const string BackupDriveLabel = "SSD-BKP-GR";
+
     private readonly IFileSystemAdapter fileSystem = new WindowsFileSystemAdapter();
     private readonly IProcessAdapter processAdapter = new WindowsProcessAdapter();
     private readonly IClock clock = new SystemClock();
@@ -65,7 +72,19 @@ public partial class MainWindow : Window
         ShowPage(BackupSourcePage);
     }
 
-    private void GoToRestoreSource_Click(object sender, RoutedEventArgs e) => ShowPage(RestoreSourcePage);
+    private void GoToRestoreSource_Click(object sender, RoutedEventArgs e)
+    {
+        if (string.IsNullOrWhiteSpace(RestorePackageTextBox.Text))
+        {
+            var backupDriveRoot = FindBackupDriveRoot();
+            if (backupDriveRoot is not null)
+            {
+                RestorePackageTextBox.Text = backupDriveRoot;
+            }
+        }
+
+        ShowPage(RestoreSourcePage);
+    }
 
     private void BrowseSourceVolume_Click(object sender, RoutedEventArgs e) =>
         BrowseFolder(SourceVolumeTextBox, "Selecione a unidade ou pasta do SSD antigo");
@@ -78,6 +97,21 @@ public partial class MainWindow : Window
 
     private void BrowseRestoreDestination_Click(object sender, RoutedEventArgs e) =>
         BrowseFolder(RestoreDestinationTextBox, "Selecione a pasta do perfil de destino");
+
+    private static string? FindBackupDriveRoot()
+    {
+        try
+        {
+            return DriveInfo.GetDrives()
+                .FirstOrDefault(drive => drive.IsReady && string.Equals(
+                    drive.VolumeLabel, BackupDriveLabel, StringComparison.OrdinalIgnoreCase))
+                ?.RootDirectory.FullName;
+        }
+        catch (IOException)
+        {
+            return null;
+        }
+    }
 
     private void BrowseFolder(TextBox target, string title)
     {
@@ -171,6 +205,15 @@ public partial class MainWindow : Window
 
             sourceVolumeRoot = volumeRoot;
             PopulateProfileList(profiles);
+            if (string.IsNullOrWhiteSpace(BackupDestinationTextBox.Text))
+            {
+                var backupDriveRoot = FindBackupDriveRoot();
+                if (backupDriveRoot is not null)
+                {
+                    BackupDestinationTextBox.Text = backupDriveRoot;
+                }
+            }
+
             ShowPage(BackupProfilePage);
         }
         catch (Exception ex)
@@ -198,7 +241,13 @@ public partial class MainWindow : Window
         ProfileListPanel.Children.Clear();
         profileOptions.Clear();
 
-        foreach (var profile in profiles)
+        // Perfis disponiveis para backup (RealProfile) sempre no topo — o tecnico nao deveria
+        // precisar rolar a lista passando por pastas de sistema/suspeitas pra achar um perfil real.
+        var orderedProfiles = profiles
+            .OrderBy(profile => profile.Classification == ProfileClassification.RealProfile ? 0 : 1)
+            .ThenBy(profile => profile.Name, StringComparer.OrdinalIgnoreCase);
+
+        foreach (var profile in orderedProfiles)
         {
             var isSelectable = profile.Classification == ProfileClassification.RealProfile;
             var label = profile.Classification switch
