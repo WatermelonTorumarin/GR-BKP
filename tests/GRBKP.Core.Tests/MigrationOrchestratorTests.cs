@@ -107,6 +107,11 @@ public sealed class MigrationOrchestratorTests
             CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
 
+        public IAsyncEnumerable<PathEntryInfo> EnumerateDirectoriesAsync(
+            string rootPath,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
         public ValueTask<Stream> OpenReadAsync(
             string path,
             CancellationToken cancellationToken = default)

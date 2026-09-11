@@ -162,6 +162,11 @@ public sealed class SelectionPolicyTests
         private readonly Dictionary<string, int> enumerationCounts =
             new(StringComparer.OrdinalIgnoreCase);
 
+        public IAsyncEnumerable<PathEntryInfo> EnumerateDirectoriesAsync(
+            string rootPath,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
         public async IAsyncEnumerable<FileSystemEntry> EnumerateFilesAsync(
             string rootPath,
             [System.Runtime.CompilerServices.EnumeratorCancellation]

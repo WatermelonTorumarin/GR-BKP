@@ -44,6 +44,29 @@ public sealed class WindowsFileSystemAdapter : IFileSystemAdapter
         }
     }
 
+    public async IAsyncEnumerable<PathEntryInfo> EnumerateDirectoriesAsync(
+        string rootPath,
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        if (!Directory.Exists(rootPath))
+        {
+            yield break;
+        }
+
+        foreach (var path in Directory.EnumerateDirectories(rootPath))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var info = new DirectoryInfo(path);
+            yield return new PathEntryInfo(
+                info.FullName,
+                PathEntryKind.Directory,
+                0,
+                info.Attributes.HasFlag(FileAttributes.ReparsePoint));
+        }
+
+        await Task.CompletedTask;
+    }
+
     public ValueTask<Stream> OpenReadAsync(
         string path,
         CancellationToken cancellationToken = default)

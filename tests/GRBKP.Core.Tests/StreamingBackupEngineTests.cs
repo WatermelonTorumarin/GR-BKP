@@ -607,6 +607,11 @@ public sealed class StreamingBackupEngineTests
             yield break;
         }
 
+        public IAsyncEnumerable<PathEntryInfo> EnumerateDirectoriesAsync(
+            string rootPath,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
         public ValueTask<Stream> OpenReadAsync(
             string path,
             CancellationToken cancellationToken = default)

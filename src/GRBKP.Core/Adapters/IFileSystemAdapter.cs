@@ -6,6 +6,16 @@ public interface IFileSystemAdapter
         string rootPath,
         CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Lista as subpastas IMEDIATAS de <paramref name="rootPath"/> — nao recursivo. Existe
+    /// separada de <see cref="EnumerateFilesAsync"/> porque descoberta de perfis (varrer
+    /// <c>Users\</c> para achar as pastas de cada funcionario) nao pode custar uma enumeracao
+    /// recursiva do volume inteiro so para aprender nomes de pastas de primeiro nivel.
+    /// </summary>
+    IAsyncEnumerable<PathEntryInfo> EnumerateDirectoriesAsync(
+        string rootPath,
+        CancellationToken cancellationToken = default);
+
     ValueTask<Stream> OpenReadAsync(string path, CancellationToken cancellationToken = default);
 
     ValueTask<Stream> OpenWriteAsync(
