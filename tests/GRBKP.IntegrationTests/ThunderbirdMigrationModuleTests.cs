@@ -212,6 +212,70 @@ public sealed class ThunderbirdMigrationModuleTests
             "Profiles", "corrupt.default-release")));
     }
 
+    [Fact]
+    public async Task RestoreAsync_RevertsSwap_WhenRecoveredPrefsJsIsEmpty()
+    {
+        // "prefs.js existe" nao e suficiente evidencia de um perfil valido — um arquivo de 0
+        // bytes passaria pela checagem antiga (so verificava presenca), mas e claramente uma
+        // copia corrompida/truncada. A validacao precisa pegar isso tambem.
+        using var fixture = new TemporaryDirectory();
+        var fileSystem = new WindowsFileSystemAdapter();
+
+        var sourceRoot = fixture.CreateThunderbirdInstall(
+            "source-empty-prefs",
+            installId: "InstallCCCCCCCCCCCCCCCC",
+            profileFolder: "empty-prefs.default-release",
+            mailContent: "conteudo",
+            emptyPrefsJs: true);
+        var destinationProfileRoot = fixture.CreateThunderbirdInstall(
+            "destination-for-empty-prefs",
+            installId: "InstallDDDDDDDDDDDDDDDD",
+            profileFolder: "novo2.default-release",
+            mailContent: null);
+
+        var processAdapter = new RecordingProcessAdapter();
+        var module = new ThunderbirdMigrationModule(fileSystem, processAdapter);
+        var discovery = await module.DiscoverAsync(
+            new MigrationContext(sourceRoot, "auxatc", fileSystem),
+            CancellationToken.None);
+
+        var packageRoot = fixture.PathFor("package-empty-prefs");
+        await foreach (var item in module.EnumerateBackupAsync(discovery, CancellationToken.None))
+        {
+            var destinationPath = Path.Combine(
+                packageRoot,
+                item.PackageRelativePath.Replace('/', Path.DirectorySeparatorChar));
+            Directory.CreateDirectory(Path.GetDirectoryName(destinationPath)!);
+            File.Copy(item.SourcePath, destinationPath);
+        }
+
+        var operationId = Guid.Parse("45454545-4545-4545-4545-454545454545");
+        var restoreContext = new RestoreContext(
+            operationId,
+            packageRoot,
+            destinationProfileRoot,
+            fileSystem,
+            new OperationCheckpoint(
+                operationId,
+                Guid.NewGuid(),
+                OperationKind.Restore,
+                RestoreState.RestoringAppModules.ToString(),
+                null,
+                0,
+                null,
+                DurableCounters.Empty));
+
+        var result = await module.RestoreAsync(restoreContext, CancellationToken.None);
+
+        Assert.Equal(ModuleOutcome.Failed, result.Outcome);
+        var destinationThunderbirdRoot = Path.Combine(
+            destinationProfileRoot,
+            "AppData", "Roaming", "Thunderbird");
+        Assert.True(Directory.Exists(Path.Combine(
+            destinationThunderbirdRoot,
+            "Profiles", "novo2.default-release")));
+    }
+
     private sealed class RecordingProcessAdapter : IProcessAdapter
     {
         public List<string> TerminatedProcessNames { get; } = [];
@@ -249,7 +313,8 @@ public sealed class ThunderbirdMigrationModuleTests
             string installId,
             string profileFolder,
             string? mailContent,
-            bool includePrefsJs = true)
+            bool includePrefsJs = true,
+            bool emptyPrefsJs = false)
         {
             var profileRoot = PathFor($"{label}/Users/auxatc");
             var thunderbirdRoot = System.IO.Path.Combine(
@@ -261,7 +326,9 @@ public sealed class ThunderbirdMigrationModuleTests
             {
                 File.WriteAllText(
                     System.IO.Path.Combine(profilePath, "prefs.js"),
-                    "user_pref(\"mail.server.server1.hostname\", \"pop.exemplo.com\");",
+                    emptyPrefsJs
+                        ? string.Empty
+                        : "user_pref(\"mail.server.server1.hostname\", \"pop.exemplo.com\");",
                     Encoding.UTF8);
             }
 

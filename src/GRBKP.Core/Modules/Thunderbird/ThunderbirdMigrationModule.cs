@@ -166,6 +166,17 @@ public sealed class ThunderbirdMigrationModule(
                 $"prefs.js ausente no perfil padrão restaurado ({defaultProfilePath}).");
         }
 
+        // Existir nao basta: um prefs.js vazio ou so com BOM passaria pela checagem de presenca
+        // sozinho, mas e evidencia clara de copia truncada/corrompida, nao de um perfil valido.
+        var prefsContent = await ReadAllTextAsync(context.FileSystem, prefsPath, ct)
+            .ConfigureAwait(false);
+        if (string.IsNullOrWhiteSpace(prefsContent))
+        {
+            return Invalid(
+                "default-profile-corrupted",
+                $"prefs.js do perfil padrão restaurado está vazio ({defaultProfilePath}).");
+        }
+
         return new ValidationResult(
             true,
             [new MigrationEvidence(

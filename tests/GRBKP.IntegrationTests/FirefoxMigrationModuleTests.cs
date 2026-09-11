@@ -105,6 +105,66 @@ public sealed class FirefoxMigrationModuleTests
             "Profiles", "xyz98765.default-release")));
     }
 
+    [Fact]
+    public async Task RestoreAsync_RevertsSwap_WhenRecoveredPrefsJsIsEmpty()
+    {
+        using var fixture = new TemporaryDirectory();
+        var fileSystem = new WindowsFileSystemAdapter();
+
+        var sourceRoot = fixture.CreateFirefoxInstall(
+            "source-empty-prefs",
+            installId: "InstallFFCCCCCCCCCCCC",
+            profileFolder: "empty-prefs.default-release",
+            bookmarkContent: "algo",
+            emptyPrefsJs: true);
+        var destinationProfileRoot = fixture.CreateFirefoxInstall(
+            "destination-for-empty-prefs",
+            installId: "InstallFFDDDDDDDDDDDD",
+            profileFolder: "novo2.default-release",
+            bookmarkContent: null);
+
+        var processAdapter = new RecordingProcessAdapter();
+        var module = new FirefoxMigrationModule(fileSystem, processAdapter);
+        var discovery = await module.DiscoverAsync(
+            new MigrationContext(sourceRoot, "auxatc", fileSystem),
+            CancellationToken.None);
+
+        var packageRoot = fixture.PathFor("package-empty-prefs");
+        await foreach (var item in module.EnumerateBackupAsync(discovery, CancellationToken.None))
+        {
+            var destinationPath = Path.Combine(
+                packageRoot,
+                item.PackageRelativePath.Replace('/', Path.DirectorySeparatorChar));
+            Directory.CreateDirectory(Path.GetDirectoryName(destinationPath)!);
+            File.Copy(item.SourcePath, destinationPath);
+        }
+
+        var operationId = Guid.NewGuid();
+        var restoreContext = new RestoreContext(
+            operationId,
+            packageRoot,
+            destinationProfileRoot,
+            fileSystem,
+            new OperationCheckpoint(
+                operationId,
+                Guid.NewGuid(),
+                OperationKind.Restore,
+                RestoreState.RestoringAppModules.ToString(),
+                null,
+                0,
+                null,
+                DurableCounters.Empty));
+
+        var result = await module.RestoreAsync(restoreContext, CancellationToken.None);
+
+        Assert.Equal(ModuleOutcome.Failed, result.Outcome);
+        var destinationFirefoxRoot = Path.Combine(
+            destinationProfileRoot, "AppData", "Roaming", "Mozilla", "Firefox");
+        Assert.True(Directory.Exists(Path.Combine(
+            destinationFirefoxRoot,
+            "Profiles", "novo2.default-release")));
+    }
+
     private sealed class RecordingProcessAdapter : IProcessAdapter
     {
         public List<string> TerminatedProcessNames { get; } = [];
@@ -141,7 +201,8 @@ public sealed class FirefoxMigrationModuleTests
             string label,
             string installId,
             string profileFolder,
-            string? bookmarkContent)
+            string? bookmarkContent,
+            bool emptyPrefsJs = false)
         {
             var profileRoot = PathFor($"{label}/Users/auxatc");
             var firefoxRoot = System.IO.Path.Combine(
@@ -151,7 +212,7 @@ public sealed class FirefoxMigrationModuleTests
 
             File.WriteAllText(
                 System.IO.Path.Combine(profilePath, "prefs.js"),
-                "user_pref(\"browser.startup.homepage\", \"about:home\");",
+                emptyPrefsJs ? string.Empty : "user_pref(\"browser.startup.homepage\", \"about:home\");",
                 Encoding.UTF8);
 
             if (bookmarkContent is not null)

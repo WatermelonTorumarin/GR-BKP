@@ -92,6 +92,70 @@ public sealed class ChromiumMigrationModuleTests
         Assert.Equal(bookmarkMarker, File.ReadAllText(bookmarksPath));
     }
 
+    [Fact]
+    public async Task RestoreAsync_RevertsSwap_WhenLocalStateReferencesAMissingProfile()
+    {
+        // "Local State" existir nao basta: se ele referencia um perfil (ex.: "Default") em
+        // profile.info_cache mas esse perfil nao tem Preferences no que foi recuperado, e sinal
+        // de backup parcial/corrompido — nao de um User Data valido.
+        using var fixture = new TemporaryDirectory();
+        var fileSystem = new WindowsFileSystemAdapter();
+        var descriptor = ChromiumBrowserDescriptor.Chrome;
+
+        var sourceRoot = fixture.CreateChromiumInstall(
+            "source-corrupt",
+            descriptor,
+            bookmarkContent: "algo",
+            includeCacheJunk: false,
+            omitPreferencesFile: true);
+        var destinationProfileRoot = fixture.CreateChromiumInstall(
+            "destination-for-corrupt",
+            descriptor,
+            bookmarkContent: "OLD-EMPTY-PROFILE",
+            includeCacheJunk: false);
+
+        var processAdapter = new RecordingProcessAdapter();
+        var module = new ChromiumMigrationModule(fileSystem, processAdapter, descriptor);
+        var discovery = await module.DiscoverAsync(
+            new MigrationContext(sourceRoot, "auxatc", fileSystem),
+            CancellationToken.None);
+
+        var packageRoot = fixture.PathFor("package-corrupt");
+        await foreach (var item in module.EnumerateBackupAsync(discovery, CancellationToken.None))
+        {
+            var destinationPath = Path.Combine(
+                packageRoot,
+                item.PackageRelativePath.Replace('/', Path.DirectorySeparatorChar));
+            Directory.CreateDirectory(Path.GetDirectoryName(destinationPath)!);
+            File.Copy(item.SourcePath, destinationPath);
+        }
+
+        var operationId = Guid.NewGuid();
+        var restoreContext = new RestoreContext(
+            operationId,
+            packageRoot,
+            destinationProfileRoot,
+            fileSystem,
+            new OperationCheckpoint(
+                operationId,
+                Guid.NewGuid(),
+                OperationKind.Restore,
+                RestoreState.RestoringAppModules.ToString(),
+                null,
+                0,
+                null,
+                DurableCounters.Empty));
+
+        var result = await module.RestoreAsync(restoreContext, CancellationToken.None);
+
+        Assert.Equal(ModuleOutcome.Failed, result.Outcome);
+        var userDataRoot = Path.Combine(
+            [destinationProfileRoot, .. descriptor.AppDataRelativeSegments]);
+        Assert.Equal(
+            "OLD-EMPTY-PROFILE",
+            File.ReadAllText(Path.Combine(userDataRoot, "Default", "Bookmarks")));
+    }
+
     public static IEnumerable<object[]> Descriptors()
     {
         yield return [ChromiumBrowserDescriptor.Chrome];
@@ -134,7 +198,8 @@ public sealed class ChromiumMigrationModuleTests
             string label,
             ChromiumBrowserDescriptor descriptor,
             string bookmarkContent,
-            bool includeCacheJunk)
+            bool includeCacheJunk,
+            bool omitPreferencesFile = false)
         {
             var profileRoot = PathFor($"{label}/Users/auxatc");
             var userDataRoot = System.IO.Path.Combine(
@@ -146,10 +211,14 @@ public sealed class ChromiumMigrationModuleTests
                 System.IO.Path.Combine(userDataRoot, "Local State"),
                 """{"profile":{"info_cache":{"Default":{"name":"Person 1"}}}}""",
                 Encoding.UTF8);
-            File.WriteAllText(
-                System.IO.Path.Combine(defaultProfile, "Preferences"),
-                "{}",
-                Encoding.UTF8);
+            if (!omitPreferencesFile)
+            {
+                File.WriteAllText(
+                    System.IO.Path.Combine(defaultProfile, "Preferences"),
+                    "{}",
+                    Encoding.UTF8);
+            }
+
             File.WriteAllText(
                 System.IO.Path.Combine(defaultProfile, "Bookmarks"),
                 bookmarkContent,

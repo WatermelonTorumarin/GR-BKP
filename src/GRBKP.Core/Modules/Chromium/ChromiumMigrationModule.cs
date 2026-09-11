@@ -1,4 +1,5 @@
 using System.Runtime.CompilerServices;
+using System.Text.Json;
 using GRBKP.Core.Adapters;
 using GRBKP.Core.Restore;
 
@@ -116,23 +117,100 @@ public sealed class ChromiumMigrationModule(
         var info = await context.FileSystem.GetInfoAsync(localStatePath, ct).ConfigureAwait(false);
         if (info is null || info.Length == 0)
         {
-            return new ValidationResult(
-                false,
-                [new MigrationEvidence(
-                    "local-state-missing",
-                    "\"Local State\" ausente ou vazio após a restauração.",
-                    EvidenceSeverity.Error)],
-                "local-state-missing");
+            return Invalid(
+                "local-state-missing",
+                "\"Local State\" ausente ou vazio após a restauração.");
+        }
+
+        var localStateContent = await ReadAllTextAsync(context.FileSystem, localStatePath, ct)
+            .ConfigureAwait(false);
+        var profileDirectoryNames = TryGetProfileDirectoryNames(localStateContent);
+        if (profileDirectoryNames is null)
+        {
+            return Invalid(
+                "local-state-corrupted",
+                "\"Local State\" não pôde ser interpretado como JSON válido.");
+        }
+
+        // "Local State" existir nao basta: ele referencia perfis em profile.info_cache, e cada
+        // um precisa realmente existir com uma Preferences legivel — do contrario e evidencia de
+        // backup parcial/corrompido, nao de um User Data valido.
+        var activeProfiles = new List<string>();
+        foreach (var profileDirectoryName in profileDirectoryNames)
+        {
+            var preferencesPath = Path.Combine(
+                context.DestinationPath,
+                profileDirectoryName,
+                "Preferences");
+            var preferencesInfo = await context.FileSystem.GetInfoAsync(preferencesPath, ct)
+                .ConfigureAwait(false);
+            if (preferencesInfo is null || preferencesInfo.Length == 0)
+            {
+                return Invalid(
+                    "profile-incomplete",
+                    $"Preferences ausente ou vazio para o perfil \"{profileDirectoryName}\" " +
+                    "referenciado em \"Local State\".");
+            }
+
+            activeProfiles.Add(profileDirectoryName);
+        }
+
+        if (activeProfiles.Count == 0)
+        {
+            return Invalid(
+                "no-profiles-referenced",
+                "\"Local State\" não referencia nenhum perfil em profile.info_cache.");
         }
 
         return new ValidationResult(
             true,
             [new MigrationEvidence(
                 $"{descriptor.ModuleId}-user-data-active",
-                "\"Local State\" presente após a restauração. Senhas, cookies e sessões podem " +
-                "não ter sido preservados (aceito por decisão do responsável) — favoritos, " +
-                "histórico e configurações foram.",
+                $"Perfis ativos após a restauração: {string.Join(", ", activeProfiles)}. " +
+                "Senhas, cookies e sessões podem não ter sido preservados (aceito por decisão " +
+                "do responsável) — favoritos, histórico e configurações foram.",
                 EvidenceSeverity.Information)]);
+    }
+
+    private static ValidationResult Invalid(string code, string message) => new(
+        false,
+        [new MigrationEvidence(code, message, EvidenceSeverity.Error)],
+        code);
+
+    /// <summary>
+    /// Le as chaves de <c>profile.info_cache</c> de um "Local State" do Chromium — cada chave e
+    /// o nome da subpasta do perfil dentro de User Data (ex.: "Default", "Profile 1"). Retorna
+    /// null se o conteudo nao for JSON valido (backup corrompido), lista vazia se for valido mas
+    /// nao referenciar nenhum perfil.
+    /// </summary>
+    private static List<string>? TryGetProfileDirectoryNames(string localStateContent)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(localStateContent);
+            if (!document.RootElement.TryGetProperty("profile", out var profileElement) ||
+                !profileElement.TryGetProperty("info_cache", out var infoCacheElement) ||
+                infoCacheElement.ValueKind != JsonValueKind.Object)
+            {
+                return [];
+            }
+
+            return infoCacheElement.EnumerateObject().Select(property => property.Name).ToList();
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    private static async Task<string> ReadAllTextAsync(
+        IFileSystemAdapter targetFileSystem,
+        string path,
+        CancellationToken ct)
+    {
+        await using var stream = await targetFileSystem.OpenReadAsync(path, ct).ConfigureAwait(false);
+        using var reader = new StreamReader(stream);
+        return await reader.ReadToEndAsync(ct).ConfigureAwait(false);
     }
 
     private string ResolveUserDataRoot(string profileRoot) =>

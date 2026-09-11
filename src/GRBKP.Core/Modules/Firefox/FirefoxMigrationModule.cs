@@ -166,6 +166,15 @@ public sealed class FirefoxMigrationModule(
                 $"prefs.js ausente no perfil padrão restaurado ({defaultProfilePath}).");
         }
 
+        var prefsContent = await ReadAllTextAsync(context.FileSystem, prefsPath, ct)
+            .ConfigureAwait(false);
+        if (string.IsNullOrWhiteSpace(prefsContent))
+        {
+            return Invalid(
+                "default-profile-corrupted",
+                $"prefs.js do perfil padrão restaurado está vazio ({defaultProfilePath}).");
+        }
+
         return new ValidationResult(
             true,
             [new MigrationEvidence(
