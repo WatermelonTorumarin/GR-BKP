@@ -24,6 +24,7 @@ public sealed class MigrationOrchestratorTests
         var firstOrchestrator = new MigrationOrchestrator(
             fileSystem,
             packageModule,
+            clock,
             new StreamingBackupEngine(fileSystem, packageModule, clock));
         var firstOperationId = Guid.Parse("66666666-6666-6666-6666-666666666666");
 
@@ -42,6 +43,7 @@ public sealed class MigrationOrchestratorTests
         var secondOrchestrator = new MigrationOrchestrator(
             fileSystem,
             new BackupPackageModule(fileSystem, clock),
+            clock,
             new StreamingBackupEngine(fileSystem, new BackupPackageModule(fileSystem, clock), clock));
 
         var second = await secondOrchestrator.RunOrResumeBackupAsync(

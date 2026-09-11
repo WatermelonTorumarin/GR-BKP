@@ -28,10 +28,21 @@ public sealed class StreamingRestoreEngine(
     BackupPackageModule packageModule,
     IClock clock,
     int bufferSize = 1024 * 1024,
-    ReportModule? reportModule = null)
+    ReportModule? reportModule = null,
+    IReadOnlySet<string>? modulesHandledSeparately = null)
 {
     private readonly OperationCheckpointStore checkpointStore = new(fileSystem, clock);
     private readonly ReportModule reportModule = reportModule ?? new ReportModule(fileSystem, clock);
+
+    /// <summary>
+    /// IDs de Module com um <c>IMigrationModule</c> real registrado — suas entradas
+    /// <c>ModuleData</c> sao restauradas por <c>AppModuleRestoreCoordinator</c> via troca
+    /// atomica de arvore, entao o loop arquivo-a-arquivo abaixo deve ignora-las silenciosamente
+    /// (nao contar como "preservado, nao reintegrado", que continua reservado para Modules
+    /// ainda nao implementados).
+    /// </summary>
+    private readonly IReadOnlySet<string> modulesHandledSeparately =
+        modulesHandledSeparately ?? new HashSet<string>();
 
     public Task<RestoreOperationResult> RunAsync(
         RestoreRequest request,
@@ -109,6 +120,22 @@ public sealed class StreamingRestoreEngine(
             {
                 if (entry.Sequence <= checkpoint.LastConfirmedSequence)
                 {
+                    continue;
+                }
+
+                if (entry.Classification == TransferClassification.ModuleData &&
+                    modulesHandledSeparately.Contains(entry.ModuleId))
+                {
+                    checkpoint = checkpoint with
+                    {
+                        LastConfirmedSequence = entry.Sequence,
+                        LastConfirmedPath = entry.PackageRelativePath,
+                        Counters = counters
+                    };
+                    await checkpointStore.SaveAsync(
+                        request.OperationRoot,
+                        checkpoint,
+                        cancellationToken).ConfigureAwait(false);
                     continue;
                 }
 
