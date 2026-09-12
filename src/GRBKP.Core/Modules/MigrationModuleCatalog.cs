@@ -46,6 +46,27 @@ public static class MigrationModuleCatalog
     /// lista para nao varrer e empacotar os mesmos arquivos duas vezes — uma como ModuleData
     /// (pelo Module) e outra como UnclassifiedApplicationData (pela varredura generica).
     /// </summary>
+    /// <summary>
+    /// Processos dos aplicativos que os Modules migram. Usado quando a origem do backup é o disco
+    /// da máquina EM USO: um desses programas aberto segura os próprios dados (bases do Outlook,
+    /// do navegador) e eles seriam copiados pela metade. Com o SSD antigo desconectado — o cenário
+    /// original — nada disso roda e a lista não tem utilidade.
+    /// </summary>
+    public static IReadOnlyList<string> KnownProcessNames() =>
+    [
+        .. new[]
+        {
+            Thunderbird.ThunderbirdMigrationModule.ProcessNames,
+            Firefox.FirefoxMigrationModule.ProcessNames,
+            [Chromium.ChromiumBrowserDescriptor.Chrome.ProcessName],
+            [Chromium.ChromiumBrowserDescriptor.Edge.ProcessName],
+            OfficeMigrationModule.ProcessNames,
+            AdobeAcrobatMigrationModule.ProcessNames
+        }
+        .SelectMany(names => names)
+        .Distinct(StringComparer.OrdinalIgnoreCase)
+    ];
+
     public static IReadOnlyList<string> KnownAppDataFootprints() =>
     [
         string.Join('/', Thunderbird.ThunderbirdMigrationModule.AppDataRelativeSegments),

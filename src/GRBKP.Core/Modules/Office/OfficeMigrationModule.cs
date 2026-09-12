@@ -20,7 +20,7 @@ public sealed class OfficeMigrationModule(
     IFileSystemAdapter fileSystem,
     IProcessAdapter processAdapter) : IMigrationModule
 {
-    private static readonly string[] ProcessNames = ["OUTLOOK", "WINWORD", "EXCEL", "POWERPNT"];
+    public static readonly string[] ProcessNames = ["OUTLOOK", "WINWORD", "EXCEL", "POWERPNT"];
 
     private static readonly IReadOnlyDictionary<string, string> KnownRelativeTrees =
         new Dictionary<string, string>

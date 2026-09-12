@@ -22,6 +22,36 @@ public sealed class WindowsProcessAdapterTests
         Assert.True(fixture.Process.HasExited);
     }
 
+    /// <summary>
+    /// Backup do disco da máquina EM USO: antes de copiar, o app precisa saber quais aplicativos
+    /// do funcionário estão abertos segurando os próprios dados. Prova contra um processo real.
+    /// </summary>
+    [Fact]
+    public async Task GetRunningProcessesAsync_ReportsOnlyWhatIsActuallyRunning()
+    {
+        using var fixture = new UniqueDummyProcess();
+        var adapter = new WindowsProcessAdapter();
+        var ausente = $"grbkp-nao-existe-{Guid.NewGuid():N}";
+
+        var running = await adapter.GetRunningProcessesAsync(
+            [fixture.ProcessName, ausente], CancellationToken.None);
+
+        Assert.Equal([fixture.ProcessName], running);
+    }
+
+    [Fact]
+    public async Task GetRunningProcessesAsync_ReportsNothing_AfterTheProcessIsClosed()
+    {
+        using var fixture = new UniqueDummyProcess();
+        var adapter = new WindowsProcessAdapter();
+
+        await adapter.TerminateProcessTreesAsync([fixture.ProcessName], CancellationToken.None);
+        var running = await adapter.GetRunningProcessesAsync(
+            [fixture.ProcessName], CancellationToken.None);
+
+        Assert.Empty(running);
+    }
+
     [Fact]
     public async Task TerminateProcessTreesAsync_DoesNothing_WhenNoProcessMatchesTheName()
     {

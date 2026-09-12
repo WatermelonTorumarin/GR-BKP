@@ -17,7 +17,7 @@ public sealed class AdobeAcrobatMigrationModule(
     public static readonly IReadOnlyList<string> AppDataRelativeSegments =
         ["AppData", "Roaming", "Adobe", "Acrobat"];
 
-    private static readonly string[] ProcessNames = ["AcroRd32", "Acrobat"];
+    public static readonly string[] ProcessNames = ["AcroRd32", "Acrobat"];
 
     public string Id => "adobe-acrobat";
 

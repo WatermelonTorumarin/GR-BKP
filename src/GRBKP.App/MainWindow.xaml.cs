@@ -360,6 +360,11 @@ public partial class MainWindow : Window
             return;
         }
 
+        if (!await ConfirmOpenApplicationsAsync(sourceVolumeRoot))
+        {
+            return;
+        }
+
         var personFolder = Path.Combine(destinationBase, $"BackUp[{personLabel}]");
         var packageRoot = await ResolvePackageRootAsync(personFolder);
         if (packageRoot is null)
@@ -396,8 +401,14 @@ public partial class MainWindow : Window
             string? sourceProfileSid = null;
             try
             {
-                var sids = await sourceSidResolver.ResolveSidsByProfileRootAsync(
-                    sourceVolumeRoot, [profile]);
+                // Quando a origem é o disco da máquina EM USO, o hive SOFTWARE está travado pelo
+                // Windows e a leitura offline nunca devolve nada — o SID precisa vir do registro
+                // ao vivo, que descreve exatamente estes mesmos perfis.
+                var sids = SourceIsLiveSystemVolume(sourceVolumeRoot)
+                    ? OfflineProfileSidResolver.MatchByProfileRoot(
+                        destinationSidReader.ResolveAll(), [profile])
+                    : await sourceSidResolver.ResolveSidsByProfileRootAsync(
+                        sourceVolumeRoot, [profile]);
                 sids.TryGetValue(profile.ProfileRoot, out sourceProfileSid);
             }
             catch (Exception)
@@ -466,6 +477,71 @@ public partial class MainWindow : Window
         {
             operationInProgress = false;
         }
+    }
+
+    /// <summary>
+    /// A origem é o disco desta própria máquina, com o Windows rodando em cima dele?
+    /// </summary>
+    private static bool SourceIsLiveSystemVolume(string sourceVolumeRoot) =>
+        SourceVolume.IsSameVolumeAs(sourceVolumeRoot, Environment.SystemDirectory);
+
+    /// <summary>
+    /// Só faz sentido quando a origem é o disco da máquina EM USO: um aplicativo aberto segura os
+    /// próprios dados (base do Outlook, do Thunderbird, do navegador) e eles seriam copiados no
+    /// meio de uma escrita — sem erro nenhum aparecendo, mas com a cópia inconsistente. Com o SSD
+    /// antigo desconectado, o cenário original do app, nada disso roda e nem chega a perguntar.
+    ///
+    /// Fechar é decisão do técnico, não do app: pode haver trabalho não salvo do funcionário na
+    /// tela. Por isso três opções, e "continuar assim mesmo" é legítimo.
+    /// </summary>
+    private async Task<bool> ConfirmOpenApplicationsAsync(string sourceVolumeRoot)
+    {
+        if (!SourceIsLiveSystemVolume(sourceVolumeRoot))
+        {
+            return true;
+        }
+
+        IReadOnlyList<string> running;
+        try
+        {
+            running = await processAdapter.GetRunningProcessesAsync(
+                MigrationModuleCatalog.KnownProcessNames());
+        }
+        catch (Exception)
+        {
+            return true;
+        }
+
+        if (running.Count == 0)
+        {
+            return true;
+        }
+
+        var answer = MessageBox.Show(
+            this,
+            "Você está copiando do disco desta máquina, e estes programas do perfil estão " +
+            $"abertos agora:\n\n  {string.Join(", ", running)}\n\n" +
+            "Enquanto estão abertos, eles seguram os próprios dados (e-mails, favoritos, " +
+            "senhas), que podem ser copiados pela metade sem nenhum erro aparecer.\n\n" +
+            "Fechar esses programas agora e seguir com o backup?\n\n" +
+            "Sim = fecha à força e copia (trabalho não salvo se perde).\n" +
+            "Não = copia assim mesmo, com o risco acima.\n" +
+            "Cancelar = volta, para você salvar e fechar por conta própria.",
+            "Programas abertos na origem",
+            MessageBoxButton.YesNoCancel,
+            MessageBoxImage.Warning);
+
+        if (answer == MessageBoxResult.Cancel)
+        {
+            return false;
+        }
+
+        if (answer == MessageBoxResult.Yes)
+        {
+            await processAdapter.TerminateProcessTreesAsync(running);
+        }
+
+        return true;
     }
 
     /// <summary>

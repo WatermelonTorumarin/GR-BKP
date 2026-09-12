@@ -12,6 +12,31 @@ namespace GRBKP.Windows.Processes;
 /// </summary>
 public sealed class WindowsProcessAdapter : IProcessAdapter
 {
+    public Task<IReadOnlyList<string>> GetRunningProcessesAsync(
+        IReadOnlyCollection<string> processNames,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(processNames);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var running = new List<string>();
+        foreach (var processName in processNames)
+        {
+            var processes = Process.GetProcessesByName(processName);
+            foreach (var process in processes)
+            {
+                process.Dispose();
+            }
+
+            if (processes.Length > 0)
+            {
+                running.Add(processName);
+            }
+        }
+
+        return Task.FromResult<IReadOnlyList<string>>(running);
+    }
+
     public async Task TerminateProcessTreesAsync(
         IReadOnlyCollection<string> processNames,
         CancellationToken cancellationToken = default)

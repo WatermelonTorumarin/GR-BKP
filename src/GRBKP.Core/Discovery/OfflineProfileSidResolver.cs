@@ -54,11 +54,25 @@ public sealed class OfflineProfileSidResolver(IOfflineRegistryHiveReader registr
 
         var profileImagePathEntries = await ResolveAllAsync(sourceVolumeRoot, cancellationToken)
             .ConfigureAwait(false);
+        return MatchByProfileRoot(profileImagePathEntries, profiles);
+    }
+
+    /// <summary>
+    /// Casa SIDs já lidos com os perfis descobertos no disco. Separado da leitura de propósito:
+    /// quando a origem é o disco da máquina EM USO, o hive SOFTWARE está travado pelo Windows e
+    /// os SIDs precisam vir do registro ao vivo — mas o casamento com as pastas é idêntico.
+    /// </summary>
+    public static IReadOnlyDictionary<string, string> MatchByProfileRoot(
+        IReadOnlyList<ProfileSidInfo> profileSids,
+        IReadOnlyList<DiscoveredProfile> profiles)
+    {
+        ArgumentNullException.ThrowIfNull(profileSids);
+        ArgumentNullException.ThrowIfNull(profiles);
 
         var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         foreach (var profile in profiles)
         {
-            var match = profileImagePathEntries.FirstOrDefault(entry =>
+            var match = profileSids.FirstOrDefault(entry =>
                 PathsMatchIgnoringDriveLetter(entry.ProfileImagePath, profile.ProfileRoot));
             if (match is not null)
             {

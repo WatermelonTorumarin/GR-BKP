@@ -18,7 +18,7 @@ public sealed class ThunderbirdMigrationModule(
 {
     private const string ProfilesIniFileName = "profiles.ini";
     private const string PackageModuleSubpath = "modules/thunderbird/root";
-    private static readonly string[] ProcessNames = ["thunderbird"];
+    public static readonly string[] ProcessNames = ["thunderbird"];
 
     /// <summary>
     /// Caminho do AppData deste app, relativo a raiz do perfil — publico para que a politica de

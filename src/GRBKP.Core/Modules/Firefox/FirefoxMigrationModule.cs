@@ -17,7 +17,7 @@ public sealed class FirefoxMigrationModule(
 {
     private const string ProfilesIniFileName = "profiles.ini";
     private const string PackageModuleSubpath = "modules/firefox/root";
-    private static readonly string[] ProcessNames = ["firefox"];
+    public static readonly string[] ProcessNames = ["firefox"];
 
     /// <summary>
     /// Caminho do AppData deste app, relativo a raiz do perfil — publico para que a politica de

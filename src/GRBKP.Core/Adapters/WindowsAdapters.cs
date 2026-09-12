@@ -7,6 +7,15 @@ public interface IProcessAdapter
     Task TerminateProcessTreesAsync(
         IReadOnlyCollection<string> processNames,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Quais dos processos informados estão rodando agora. Necessário quando a origem do backup é
+    /// o disco da máquina EM USO: um aplicativo aberto segura os próprios dados e eles seriam
+    /// copiados pela metade, sem ninguém perceber.
+    /// </summary>
+    Task<IReadOnlyList<string>> GetRunningProcessesAsync(
+        IReadOnlyCollection<string> processNames,
+        CancellationToken cancellationToken = default);
 }
 
 public interface IWindowsServiceAdapter

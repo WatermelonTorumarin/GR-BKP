@@ -133,6 +133,10 @@ public sealed class AdobeAcrobatMigrationModuleTests
             TerminatedProcessNames.AddRange(processNames);
             return Task.CompletedTask;
         }
+        public Task<IReadOnlyList<string>> GetRunningProcessesAsync(
+            IReadOnlyCollection<string> processNames,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult<IReadOnlyList<string>>([]);
     }
 
     private sealed class TemporaryDirectory : IDisposable

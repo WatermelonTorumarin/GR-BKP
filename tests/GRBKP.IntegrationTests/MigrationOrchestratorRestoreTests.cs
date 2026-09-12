@@ -159,6 +159,11 @@ public sealed class MigrationOrchestratorRestoreTests
         public Task TerminateProcessTreesAsync(
             IReadOnlyCollection<string> processNames,
             CancellationToken cancellationToken = default) => Task.CompletedTask;
+
+        public Task<IReadOnlyList<string>> GetRunningProcessesAsync(
+            IReadOnlyCollection<string> processNames,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult<IReadOnlyList<string>>([]);
     }
 
     private sealed class TemporaryDirectory : IDisposable
