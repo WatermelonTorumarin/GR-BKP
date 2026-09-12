@@ -43,6 +43,22 @@ public interface IWindowsCommandAdapter
         CancellationToken cancellationToken = default);
 }
 
+/// <summary>
+/// Executa um desinstalador especifico cujo caminho so e conhecido em tempo de execucao (ex.:
+/// "OneDriveSetup.exe", que existe em locais diferentes conforme a instalacao seja por usuario ou
+/// por computador) — diferente de <see cref="IWindowsCommandAdapter"/>, que so roda os binarios
+/// fixos do proprio Windows resolvidos internamente. O chamador so deve passar um caminho que ele
+/// mesmo acabou de confirmar existir (nunca um caminho vindo de entrada nao confiavel); sempre
+/// pelo caminho absoluto e com argumentos em lista, nunca via shell.
+/// </summary>
+public interface IExternalUninstallerAdapter
+{
+    Task<WindowsCommandResult> RunUninstallerAsync(
+        string verifiedExecutablePath,
+        IReadOnlyList<string> arguments,
+        CancellationToken cancellationToken = default);
+}
+
 public interface IPrinterAdapter
 {
     Task<IReadOnlyList<PrinterDescriptor>> DiscoverAsync(
@@ -72,7 +88,10 @@ public enum ApprovedWindowsCommand
     Dism,
     PnpUtil,
     PrintBrm,
-    PowerCfg
+    PowerCfg,
+    PowerShell,
+    SchTasks,
+    Shutdown
 }
 
 public sealed record WindowsCommandResult(int ExitCode, string StandardOutput, string StandardError);

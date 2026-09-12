@@ -171,6 +171,10 @@
                                 <TextBlock Foreground="#FFFFE8A3" TextAlignment="Center" TextWrapping="Wrap"
                                            Text="Arquivos de mesmo nome serão substituídos. Thunderbird/Firefox/Chrome/Edge encontrados no destino serão fechados antes da restauração." />
                             </Border>
+                            <CheckBox x:Name="CorporateCleanupCheckBox" IsChecked="True"
+                                      Content="Remover OneDrive e Copilot deste computador (política padrão da empresa)"
+                                      Foreground="White" FontSize="15" HorizontalAlignment="Center"
+                                      Margin="0,0,0,22" />
                             <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
                                 <Button Style="{StaticResource SecondaryButton}" Content="Voltar"
                                         Click="RestoreConfirmBack_Click" Margin="0,0,10,0" />

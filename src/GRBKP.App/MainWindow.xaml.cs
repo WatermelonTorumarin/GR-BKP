@@ -7,6 +7,7 @@ using System.Windows.Media.Imaging;
 using GRBKP.Core.Adapters;
 using GRBKP.Core.Discovery;
 using GRBKP.Core.Modules;
+using GRBKP.Core.Modules.CorporateCleanup;
 using GRBKP.Core.Modules.FileZilla;
 using GRBKP.Core.Modules.Printing;
 using GRBKP.Core.Operations;
@@ -45,6 +46,7 @@ public partial class MainWindow : Window
     private readonly MigrationOrchestrator orchestrator;
     private readonly FileZillaMigrationService fileZillaService;
     private readonly PrinterDriverMigrationService printerDriverService;
+    private readonly CorporateCleanupService corporateCleanupService;
 
     private string? sourceVolumeRoot;
     private readonly List<(DiscoveredProfile Profile, RadioButton Control)> profileOptions = [];
@@ -72,6 +74,8 @@ public partial class MainWindow : Window
         fileZillaService = new FileZillaMigrationService(fileSystem, new WindowsServiceAdapter());
         printerDriverService = new PrinterDriverMigrationService(
             fileSystem, new WindowsCommandAdapter(), new PrinterDriverDiscovery(fileSystem));
+        corporateCleanupService = new CorporateCleanupService(
+            fileSystem, new WindowsExternalUninstallerAdapter(), new WindowsCommandAdapter());
 
         LoadVisualAssets();
     }
@@ -186,6 +190,7 @@ public partial class MainWindow : Window
         BackupDestinationTextBox.Text = string.Empty;
         RestorePackageTextBox.Text = string.Empty;
         RestoreDestinationTextBox.Text = string.Empty;
+        CorporateCleanupCheckBox.IsChecked = true;
         ProfileListPanel.Children.Clear();
         profileOptions.Clear();
         ShowPage(HomePage);
@@ -546,6 +551,7 @@ public partial class MainWindow : Window
             return;
         }
 
+        var runCorporateCleanup = CorporateCleanupCheckBox.IsChecked == true;
         var operationId = Guid.NewGuid();
         var publicRoot = Path.Combine(
             Path.GetDirectoryName(restoreDestinationProfileRoot.TrimEnd(
@@ -572,6 +578,9 @@ public partial class MainWindow : Window
                     restorePackageRoot,
                     restoreMetadata?.Profile.OriginalPath,
                     restoreDestinationProfileRoot);
+                var cleanupSummary = runCorporateCleanup
+                    ? await ApplyCorporateCleanupAsync(restoreDestinationProfileRoot)
+                    : string.Empty;
                 ShowResult(
                     true,
                     "Restauração concluída",
@@ -579,7 +588,9 @@ public partial class MainWindow : Window
                     $"{FormatBytes(result.PersonalDataResult.Counters.CopiedBytes)}\n\n" +
                     $"Aplicativos: {moduleSummary}\n\n" +
                     $"Dados restaurados para:\n{restoreDestinationProfileRoot}" +
-                    machineLevelSummary);
+                    machineLevelSummary +
+                    cleanupSummary +
+                    "\n\nReinicie este computador quando for possível para concluir a migração.");
             }
             else
             {
@@ -649,6 +660,27 @@ public partial class MainWindow : Window
         }
 
         return lines.Count > 0 ? "\n\n" + string.Join("\n", lines) : string.Empty;
+    }
+
+    /// <summary>
+    /// Limpeza corporativa (OneDrive + Copilot) do computador de DESTINO — so acionada quando o
+    /// tecnico deixou a caixa marcada e a restauracao de perfil ja terminou com sucesso. Melhor
+    /// esforco, igual aos servicos de nivel de maquina: uma falha aqui aparece no resumo, mas nao
+    /// reprova a restauracao.
+    /// </summary>
+    private async Task<string> ApplyCorporateCleanupAsync(string destinationProfileRoot)
+    {
+        try
+        {
+            var destinationVolumeRoot = Path.GetPathRoot(destinationProfileRoot) ?? destinationProfileRoot;
+            var result = await corporateCleanupService.ApplyAsync(
+                destinationVolumeRoot, destinationProfileRoot);
+            return "\n\n" + string.Join("\n", result.Messages);
+        }
+        catch (Exception ex)
+        {
+            return $"\n\nLimpeza corporativa: falha ({ex.Message}).";
+        }
     }
 
     private static string FormatBytes(long bytes)
