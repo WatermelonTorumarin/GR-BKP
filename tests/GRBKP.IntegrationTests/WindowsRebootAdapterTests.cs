@@ -42,8 +42,11 @@ public sealed class WindowsRebootAdapterTests
 
         try
         {
+            // "/FO LIST" evita o formato de tabela padrao do schtasks, que TRUNCA a coluna de
+            // nome da tarefa (o codigo de producao nunca depende desse parsing — so este teste).
             var queryAfterCreate = await queryAdapter.ExecuteApprovedAsync(
-                new WindowsCommandRequest(ApprovedWindowsCommand.SchTasks, ["/Query", "/TN", taskName]),
+                new WindowsCommandRequest(
+                    ApprovedWindowsCommand.SchTasks, ["/Query", "/TN", taskName, "/FO", "LIST"]),
                 CancellationToken.None);
             Assert.Equal(0, queryAfterCreate.ExitCode);
             Assert.Contains(taskName, queryAfterCreate.StandardOutput);
