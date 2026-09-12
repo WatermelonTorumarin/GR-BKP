@@ -90,6 +90,10 @@ public sealed class OfficeMigrationModule(
                     entry.FullPath,
                     $"modules/office/{key}/{relative}",
                     TransferClassification.ModuleData,
+                    // Os dados do Outlook são o item insubstituível de um perfil de trabalho:
+                    // se o PST/OST corromper na cópia, ninguém percebe até precisar dele — com o
+                    // SSD de origem já formatado. Vale o custo do hash (ver SelectionPolicyModule).
+                    RequiresSha256: key == "outlook-data",
                     SourceRelativePath: relative,
                     Metadata: new FileMetadata(
                         entry.CreationTimeUtc, entry.LastWriteTimeUtc, entry.Attributes));

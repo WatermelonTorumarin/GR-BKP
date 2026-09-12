@@ -220,13 +220,27 @@ public sealed class SelectionPolicyModule(
             entry.FullPath,
             $"{packageRoot}/{relativePath}",
             classification,
-            RequiresSha256: false,
+            RequiresSha256: IsCriticalFile(packageRoot, relativePath),
             SourceRelativePath: relativePath,
             Metadata: new FileMetadata(
                 entry.CreationTimeUtc,
                 entry.LastWriteTimeUtc,
                 entry.Attributes));
     }
+
+    /// <summary>
+    /// Quais arquivos ganham verificação por hash SHA-256 durante a cópia. Não é todo mundo de
+    /// propósito: o hash é calculado no mesmo buffer da cópia (sem I/O extra), mas custa CPU —
+    /// medido a 281 MB/s na máquina de referência, o que pesaria num PST de vários GB.
+    ///
+    /// O critério é "o que ninguém percebe se corromper até precisar, com a origem já
+    /// formatada": documentos do funcionário e as bases do Outlook. Um instalador em Downloads
+    /// ou um cache de aplicativo não justificam o custo — são recuperáveis de outro jeito.
+    /// </summary>
+    private static bool IsCriticalFile(string packageRoot, string relativePath) =>
+        packageRoot.EndsWith("/Documents", StringComparison.OrdinalIgnoreCase) ||
+        relativePath.EndsWith(".pst", StringComparison.OrdinalIgnoreCase) ||
+        relativePath.EndsWith(".ost", StringComparison.OrdinalIgnoreCase);
 
     private bool IsWithinExcludedAppDataPath(string relativeFromProfile)
     {

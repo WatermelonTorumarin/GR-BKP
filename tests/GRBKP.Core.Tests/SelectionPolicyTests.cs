@@ -96,6 +96,39 @@ public sealed class SelectionPolicyTests
     }
 
     [Fact]
+    public async Task CriticalFiles_AreMarkedForHashing_WhileBulkFilesAreNot()
+    {
+        // Política de integridade: verificar por hash TUDO custaria caro (SHA-256 medido a
+        // 281 MB/s nesta máquina), mas os arquivos insubstituíveis merecem a garantia contra
+        // corrupção silenciosa — setor ruim no SSD velho, bit trocado. Critério: documentos do
+        // funcionário e bases do Outlook (.pst/.ost), onde ninguém percebe a corrupção até
+        // precisar do arquivo, já com o SSD de origem formatado.
+        var fileSystem = new SelectionFileSystemFake();
+        var profileRoot = @"E:\Users\Ana";
+        fileSystem.AddRegularFile(Path.Combine(profileRoot, "Documents"), "contrato.pdf");
+        fileSystem.AddRegularFile(Path.Combine(profileRoot, "Downloads"), "instalador.exe");
+        fileSystem.AddRegularFile(
+            Path.Combine(profileRoot, "AppData", "Local"), @"Microsoft\Outlook\ana@ravel.pst");
+        var sut = new SelectionPolicyModule(fileSystem);
+
+        var run = sut.Select(new ProfileSelection("Ana", profileRoot, null));
+        var items = await CollectAsync(run.Items);
+
+        Assert.True(
+            items.Single(item => item.PackageRelativePath.EndsWith(
+                "contrato.pdf", StringComparison.Ordinal)).RequiresSha256,
+            "Documento do funcionário precisa de verificação por hash.");
+        Assert.True(
+            items.Single(item => item.PackageRelativePath.EndsWith(
+                ".pst", StringComparison.Ordinal)).RequiresSha256,
+            "Base do Outlook precisa de verificação por hash.");
+        Assert.False(
+            items.Single(item => item.PackageRelativePath.EndsWith(
+                "instalador.exe", StringComparison.Ordinal)).RequiresSha256,
+            "Download reinstalável não justifica o custo do hash.");
+    }
+
+    [Fact]
     public async Task T04_PublicAndProfileFilesWithSameName_KeepDistinctNamespaces()
     {
         var fileSystem = new SelectionFileSystemFake();

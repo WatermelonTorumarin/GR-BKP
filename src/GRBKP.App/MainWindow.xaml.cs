@@ -113,6 +113,24 @@ public partial class MainWindow : Window
         ShowPage(RestoreSourcePage);
     }
 
+    private void GoToVerify_Click(object sender, RoutedEventArgs e)
+    {
+        VerifyStatusText.Text = string.Empty;
+        if (string.IsNullOrWhiteSpace(VerifyPackageTextBox.Text))
+        {
+            var backupDriveRoot = FindBackupDriveRoot();
+            if (backupDriveRoot is not null)
+            {
+                VerifyPackageTextBox.Text = backupDriveRoot;
+            }
+        }
+
+        ShowPage(VerifyPage);
+    }
+
+    private void BrowseVerifyPackage_Click(object sender, RoutedEventArgs e) =>
+        BrowseFolder(VerifyPackageTextBox, "Selecione a pasta do backup a conferir");
+
     private void BrowseSourceVolume_Click(object sender, RoutedEventArgs e) =>
         BrowseFolder(SourceVolumeTextBox, "Selecione a unidade ou pasta do SSD antigo");
 
@@ -159,7 +177,7 @@ public partial class MainWindow : Window
         foreach (var candidate in new UIElement[]
         {
             HomePage, BackupSourcePage, BackupProfilePage, RestoreSourcePage,
-            RestoreConfirmPage, ProgressPage, ResultPage
+            RestoreConfirmPage, VerifyPage, ProgressPage, ResultPage
         })
         {
             candidate.Visibility = ReferenceEquals(candidate, page)
@@ -342,10 +360,12 @@ public partial class MainWindow : Window
             return;
         }
 
-        var packageRoot = Path.Combine(
-            destinationBase,
-            $"BackUp[{personLabel}]",
-            DateTime.Now.ToString("yyyy-MM-dd_HH-mm"));
+        var personFolder = Path.Combine(destinationBase, $"BackUp[{personLabel}]");
+        var packageRoot = await ResolvePackageRootAsync(personFolder);
+        if (packageRoot is null)
+        {
+            return;
+        }
 
         operationInProgress = true;
         ShowProgress("Fazendo backup…", $"Copiando dados de {profile.Name} para {packageRoot}");
@@ -402,7 +422,7 @@ public partial class MainWindow : Window
                 "fase2-basica",
                 [.. applicableModules.Keys],
                 DurableCounters.Empty,
-                new IntegrityPolicy("SHA256", false, "size-and-handle"),
+                new IntegrityPolicy("SHA256", true, "size-and-handle+sha256-critical"),
                 IsEncrypted: false);
 
             var result = await orchestrator.RunOrResumeBackupAsync(
@@ -415,7 +435,9 @@ public partial class MainWindow : Window
                     sourceVolumeRoot, packageRoot);
                 ShowResult(
                     true,
-                    "Backup concluído",
+                    result.Outcome == OrchestratedBackupOutcome.Resumed
+                        ? "Backup concluído (retomado)"
+                        : "Backup concluído",
                     $"{result.Result.Counters.CopiedFiles} arquivos • " +
                     $"{FormatBytes(result.Result.Counters.CopiedBytes)}\n\n" +
                     $"Os dados foram salvos em:\n{packageRoot}" +
@@ -445,6 +467,72 @@ public partial class MainWindow : Window
             operationInProgress = false;
         }
     }
+
+    /// <summary>
+    /// Decide se este backup começa do zero (pasta nova com data e hora) ou retoma um pacote que
+    /// ficou pelo caminho. Retornar <c>null</c> significa que o técnico desistiu no diálogo.
+    ///
+    /// Sem isso, a retomada dos motores era código inalcançável: a interface sempre criava uma
+    /// pasta nova, então um backup de 200 GB interrompido em 80% recomeçava do zero.
+    /// </summary>
+    private async Task<string?> ResolvePackageRootAsync(string personFolder)
+    {
+        var newPackageRoot = Path.Combine(
+            personFolder, DateTime.Now.ToString("yyyy-MM-dd_HH-mm"));
+
+        IncompletePackage? incomplete;
+        try
+        {
+            incomplete = await new IncompletePackageFinder(fileSystem, packageModule)
+                .FindMostRecentAsync(personFolder);
+        }
+        catch (Exception)
+        {
+            // Procurar pendências é conveniência, não requisito: na dúvida, começa um novo.
+            return newPackageRoot;
+        }
+
+        if (incomplete is null)
+        {
+            return newPackageRoot;
+        }
+
+        var copied = incomplete.Counters.CopiedFiles;
+        var answer = MessageBox.Show(
+            this,
+            $"Existe um backup de {personLabelFrom(incomplete.PackageRoot)} que não foi concluído:\n\n" +
+            $"  Pasta: {incomplete.PackageRoot}\n" +
+            $"  Situação: {DescribePackageState(incomplete.Status)}\n" +
+            $"  Já copiados: {copied} arquivo(s) • {FormatBytes(incomplete.Counters.CopiedBytes)}\n\n" +
+            "Deseja RETOMAR de onde parou?\n\n" +
+            "Sim = continua o backup existente (não recopia o que já foi feito).\n" +
+            "Não = começa um backup novo, do zero, em outra pasta.",
+            "Backup incompleto encontrado",
+            MessageBoxButton.YesNoCancel,
+            MessageBoxImage.Question);
+
+        return answer switch
+        {
+            MessageBoxResult.Yes => incomplete.PackageRoot,
+            MessageBoxResult.No => newPackageRoot,
+            _ => null
+        };
+
+        static string personLabelFrom(string packageRoot) =>
+            Path.GetFileName(packageRoot.TrimEnd(
+                Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+    }
+
+    private static string DescribePackageState(PackageState state) => state switch
+    {
+        PackageState.Paused => "interrompido (mídia desconectada ou disco cheio)",
+        PackageState.Copying => "parou durante a cópia",
+        PackageState.Inspecting => "parou logo no início",
+        PackageState.Verifying => "parou na verificação final",
+        PackageState.Incomplete => "incompleto",
+        PackageState.Failed => "falhou",
+        _ => state.ToString()
+    };
 
     /// <summary>
     /// Antes de copiar qualquer coisa, checa no registro do próprio perfil se Documentos/Área de
@@ -549,6 +637,82 @@ public partial class MainWindow : Window
         }
 
         return lines.Count > 0 ? "\n\n" + string.Join("\n", lines) : string.Empty;
+    }
+
+    // ---- Conferência de pacote ----
+
+    /// <summary>
+    /// A pergunta que o técnico precisa responder antes de formatar o SSD antigo: "está tudo lá?".
+    /// Relê o pacote inteiro contra o manifesto. Deliberadamente não oferece nenhuma ação
+    /// corretiva: se algo estiver errado, a resposta é refazer o backup com a origem ainda intacta.
+    /// </summary>
+    private async void VerifyPackage_Click(object sender, RoutedEventArgs e)
+    {
+        if (operationInProgress)
+        {
+            return;
+        }
+
+        var packageRoot = VerifyPackageTextBox.Text.Trim();
+        if (string.IsNullOrWhiteSpace(packageRoot))
+        {
+            VerifyStatusText.Text = "Informe a pasta do backup.";
+            return;
+        }
+
+        if (!Directory.Exists(Path.Combine(packageRoot, "data")) ||
+            !File.Exists(Path.Combine(packageRoot, "package.json")))
+        {
+            VerifyStatusText.Text =
+                $"{packageRoot} não parece ser uma pasta de backup do GR BKP. " +
+                "Escolha a pasta que contém package.json (normalmente BackUp[nome]\\data e hora).";
+            return;
+        }
+
+        operationInProgress = true;
+        ShowProgress("Conferindo backup…", $"Relendo e verificando {packageRoot}");
+        try
+        {
+            var verifier = new BackupPackageVerifier(fileSystem, packageModule);
+            var progress = new Progress<long>(count =>
+                ProgressDetailsText.Text = $"{count} arquivos conferidos…");
+            var report = await Task.Run(() => verifier.VerifyAsync(packageRoot, progress));
+
+            if (report.IsIntact)
+            {
+                ShowResult(
+                    true,
+                    "Backup íntegro",
+                    $"{report.VerifiedFiles} arquivos • {FormatBytes(report.VerifiedBytes)}\n\n" +
+                    $"Todos os arquivos da lista estão presentes e com o tamanho correto.\n" +
+                    $"{report.HashCheckedFiles} arquivo(s) crítico(s) também tiveram o conteúdo " +
+                    "conferido byte a byte.\n\n" +
+                    "Pode seguir com a formatação da origem.");
+            }
+            else
+            {
+                var examples = string.Join(
+                    "\n",
+                    report.Issues.Take(6).Select(issue => $"  • {issue.PackageRelativePath}: {issue.Detail}"));
+                var remaining = report.Issues.Count > 6
+                    ? $"\n  • … e mais {report.Issues.Count - 6} problema(s)"
+                    : string.Empty;
+                ShowResult(
+                    false,
+                    "Backup com problemas",
+                    $"{report.Issues.Count} problema(s) encontrado(s):\n{examples}{remaining}\n\n" +
+                    "NÃO formate a origem. Refaça o backup deste perfil enquanto o SSD antigo " +
+                    "ainda está disponível.");
+            }
+        }
+        catch (Exception ex)
+        {
+            ShowResult(false, "Não foi possível conferir", ex.Message);
+        }
+        finally
+        {
+            operationInProgress = false;
+        }
     }
 
     // ---- Fluxo de restauração ----
