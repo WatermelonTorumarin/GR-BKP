@@ -1,6 +1,8 @@
 using GRBKP.Core.Adapters;
+using GRBKP.Core.Modules.Adobe;
 using GRBKP.Core.Modules.Chromium;
 using GRBKP.Core.Modules.Firefox;
+using GRBKP.Core.Modules.Office;
 using GRBKP.Core.Modules.Thunderbird;
 
 namespace GRBKP.Core.Modules;
@@ -24,13 +26,17 @@ public static class MigrationModuleCatalog
         var firefox = new FirefoxMigrationModule(fileSystem, processAdapter);
         var chrome = new ChromiumMigrationModule(fileSystem, processAdapter, ChromiumBrowserDescriptor.Chrome);
         var edge = new ChromiumMigrationModule(fileSystem, processAdapter, ChromiumBrowserDescriptor.Edge);
+        var office = new OfficeMigrationModule(fileSystem, processAdapter);
+        var adobeAcrobat = new AdobeAcrobatMigrationModule(fileSystem, processAdapter);
 
         return new Dictionary<string, IMigrationModule>
         {
             [thunderbird.Id] = thunderbird,
             [firefox.Id] = firefox,
             [chrome.Id] = chrome,
-            [edge.Id] = edge
+            [edge.Id] = edge,
+            [office.Id] = office,
+            [adobeAcrobat.Id] = adobeAcrobat
         };
     }
 
@@ -45,6 +51,8 @@ public static class MigrationModuleCatalog
         string.Join('/', Thunderbird.ThunderbirdMigrationModule.AppDataRelativeSegments),
         string.Join('/', Firefox.FirefoxMigrationModule.AppDataRelativeSegments),
         string.Join('/', Chromium.ChromiumBrowserDescriptor.Chrome.AppDataRelativeSegments),
-        string.Join('/', Chromium.ChromiumBrowserDescriptor.Edge.AppDataRelativeSegments)
+        string.Join('/', Chromium.ChromiumBrowserDescriptor.Edge.AppDataRelativeSegments),
+        .. OfficeMigrationModule.AppDataRelativeTrees,
+        string.Join('/', AdobeAcrobatMigrationModule.AppDataRelativeSegments)
     ];
 }

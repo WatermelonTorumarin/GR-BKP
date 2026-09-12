@@ -1,6 +1,7 @@
 using System.Text;
 using GRBKP.Core.Adapters;
 using GRBKP.Core.Modules;
+using GRBKP.Core.Modules.Adobe;
 using GRBKP.Core.Modules.Chromium;
 using GRBKP.Core.Modules.Mozilla;
 using GRBKP.Core.Operations;
@@ -14,15 +15,15 @@ using GRBKP.Windows.Processes;
 namespace GRBKP.IntegrationTests;
 
 /// <summary>
-/// Prova de integracao real: todos os quatro Modules implementados (Thunderbird, Firefox,
-/// Chrome, Edge) mais um arquivo pessoal, restaurados numa unica chamada ao
+/// Prova de integracao real: todos os seis Modules implementados (Thunderbird, Firefox, Chrome,
+/// Edge, Office, Adobe Acrobat Reader) mais um arquivo pessoal, restaurados numa unica chamada ao
 /// MigrationOrchestrator, usando exatamente o registro que MigrationModuleCatalog monta — o
 /// mesmo caminho que o app real vai usar, nao um atalho so de teste.
 /// </summary>
 public sealed class MigrationModuleCatalogEndToEndTests
 {
     [Fact]
-    public async Task RunOrResumeRestoreAsync_RestoresPersonalFileAndAllFourAppModules_InOneCall()
+    public async Task RunOrResumeRestoreAsync_RestoresPersonalFileAndAllSixAppModules_InOneCall()
     {
         using var fixture = new TemporaryDirectory();
         var fileSystem = new WindowsFileSystemAdapter();
@@ -35,6 +36,9 @@ public sealed class MigrationModuleCatalogEndToEndTests
         const string firefoxMarker = "FIREFOX-BOOKMARKS-BACKUP";
         const string chromeMarker = "CHROME-BOOKMARKS-BACKUP";
         const string edgeMarker = "EDGE-BOOKMARKS-BACKUP";
+        const string officeSignatureMarker = "ASSINATURA-DO-FUNCIONARIO";
+        const string officePstMarker = "CONTEUDO-DO-PST-DO-OUTLOOK";
+        const string adobeMarker = "CONFIGURACAO-BASICA-DO-ACROBAT-READER";
 
         // --- Origem: um funcionario com os quatro apps em uso ---
         var sourceProfileRoot = fixture.PathFor("source/Users/auxatc");
@@ -57,6 +61,13 @@ public sealed class MigrationModuleCatalogEndToEndTests
             sourceProfileRoot, ChromiumBrowserDescriptor.Chrome, chromeMarker);
         fixture.CreateChromiumInstall(
             sourceProfileRoot, ChromiumBrowserDescriptor.Edge, edgeMarker);
+        fixture.WriteFile(
+            "source/Users/auxatc/AppData/Roaming/Microsoft/Signatures/Padrao.htm",
+            officeSignatureMarker);
+        fixture.WriteFile(
+            "source/Users/auxatc/AppData/Local/Microsoft/Outlook/auxatc.pst", officePstMarker);
+        fixture.WriteFile(
+            "source/Users/auxatc/AppData/Roaming/Adobe/Acrobat/DC/Preferences.xml", adobeMarker);
 
         // --- Destino: SSD novo, cada app ja instalado com seu proprio perfil vazio ---
         var destinationProfileRoot = fixture.PathFor("destination/Users/auxatc");
@@ -77,6 +88,12 @@ public sealed class MigrationModuleCatalogEndToEndTests
             destinationProfileRoot, ChromiumBrowserDescriptor.Chrome, "EMPTY-NEW-PROFILE");
         fixture.CreateChromiumInstall(
             destinationProfileRoot, ChromiumBrowserDescriptor.Edge, "EMPTY-NEW-PROFILE");
+        fixture.WriteFile(
+            "destination/Users/auxatc/AppData/Roaming/Microsoft/Signatures/Antiga.htm",
+            "EMPTY-NEW-PROFILE");
+        fixture.WriteFile(
+            "destination/Users/auxatc/AppData/Roaming/Adobe/Acrobat/DC/Preferences.xml",
+            "EMPTY-NEW-PROFILE");
 
         var processAdapter = new WindowsProcessAdapter();
         var modules = MigrationModuleCatalog.CreateAll(fileSystem, processAdapter);
@@ -142,7 +159,7 @@ public sealed class MigrationModuleCatalogEndToEndTests
 
         Assert.Equal(RestoreState.Complete, result.OverallState);
         Assert.True(result.ModuleOutcome.Succeeded);
-        Assert.Equal(4, result.ModuleOutcome.Results.Count);
+        Assert.Equal(6, result.ModuleOutcome.Results.Count);
         Assert.All(result.ModuleOutcome.Results, r => Assert.Equal(ModuleOutcome.Applied, r.Outcome));
 
         // Efeito 1: documento pessoal.
@@ -186,6 +203,23 @@ public sealed class MigrationModuleCatalogEndToEndTests
         Assert.Equal(
             edgeMarker,
             File.ReadAllText(Path.Combine(edgeRoot, "Default", "Bookmarks")));
+
+        // Efeito 6: Office — assinatura e PST do Outlook recuperados.
+        Assert.Equal(
+            officeSignatureMarker,
+            File.ReadAllText(Path.Combine(
+                destinationProfileRoot, "AppData", "Roaming", "Microsoft", "Signatures", "Padrao.htm")));
+        Assert.Equal(
+            officePstMarker,
+            File.ReadAllText(Path.Combine(
+                destinationProfileRoot, "AppData", "Local", "Microsoft", "Outlook", "auxatc.pst")));
+
+        // Efeito 7: Adobe Acrobat Reader — configuracoes basicas recuperadas.
+        Assert.Equal(
+            adobeMarker,
+            File.ReadAllText(Path.Combine(
+                destinationProfileRoot,
+                "AppData", "Roaming", "Adobe", "Acrobat", "DC", "Preferences.xml")));
     }
 
     private static async IAsyncEnumerable<TransferItem> AllItems(
