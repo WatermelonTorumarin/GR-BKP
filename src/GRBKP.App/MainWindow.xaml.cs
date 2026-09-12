@@ -1,3 +1,4 @@
+using System.Text;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Windows;
@@ -62,6 +63,48 @@ public partial class MainWindow : Window
     /// progresso esconde o botão, mas o segundo clique pode já estar na fila do Windows).
     /// </summary>
     private bool operationInProgress;
+
+    private long progressTotalBytes;
+    private long progressTotalFiles;
+    private string progressContext = string.Empty;
+    private DateTime? lastProgressRefresh;
+    private string? currentFailureReportPath;
+
+    private static readonly System.Windows.Media.Brush SuccessBrush =
+        new System.Windows.Media.SolidColorBrush(
+            System.Windows.Media.Color.FromRgb(0x8A, 0xF0, 0xA5));
+
+    private static readonly System.Windows.Media.Brush FailureBrush =
+        new System.Windows.Media.SolidColorBrush(
+            System.Windows.Media.Color.FromRgb(0xF0, 0x8A, 0x8A));
+
+    private static readonly System.Windows.Media.Brush WarningBrush =
+        new System.Windows.Media.SolidColorBrush(
+            System.Windows.Media.Color.FromRgb(0xFF, 0xE8, 0xA3));
+
+    private static readonly System.Windows.Media.Brush AccentBrush =
+        new System.Windows.Media.SolidColorBrush(
+            System.Windows.Media.Color.FromRgb(0x9A, 0xE7, 0xFF));
+
+    private static readonly System.Windows.Media.Brush BodyBrush =
+        new System.Windows.Media.SolidColorBrush(
+            System.Windows.Media.Color.FromRgb(0xE5, 0xF7, 0xFF));
+
+    private enum ResultTone
+    {
+        Info,
+        Warning,
+        Success
+    }
+
+    /// <summary>
+    /// Um bloco da tela de resultado: título curto e as linhas daquele assunto. Substitui o
+    /// parágrafo único onde caminho de pasta, avisos e lista de erros se misturavam.
+    /// </summary>
+    private sealed record ResultSection(
+        string Title,
+        IReadOnlyList<string> Lines,
+        ResultTone Tone = ResultTone.Info);
 
     public MainWindow()
     {
@@ -190,6 +233,12 @@ public partial class MainWindow : Window
     {
         ProgressTitleText.Text = title;
         ProgressDetailsText.Text = details;
+        ProgressAmountText.Text = string.Empty;
+        OperationProgressBar.IsIndeterminate = true;
+        OperationProgressBar.Value = 0;
+        progressTotalBytes = 0;
+        progressTotalFiles = 0;
+        lastProgressRefresh = null;
         ShowPage(ProgressPage);
         var animation = new DoubleAnimation(0, 360, new Duration(TimeSpan.FromSeconds(1.1)))
         {
@@ -198,16 +247,172 @@ public partial class MainWindow : Window
         LoadingRotation.BeginAnimation(System.Windows.Media.RotateTransform.AngleProperty, animation);
     }
 
-    private void ShowResult(bool success, string title, string summary)
+    /// <summary>
+    /// Informa o tamanho total que será transferido, o que transforma o indicador indeterminado
+    /// numa barra de progresso de verdade. No backup vem de uma medição prévia dos arquivos; na
+    /// restauração, dos contadores gravados no próprio pacote.
+    /// </summary>
+    private void SetProgressTotals(long totalFiles, long totalBytes)
+    {
+        progressTotalFiles = totalFiles;
+        progressTotalBytes = totalBytes;
+        OperationProgressBar.IsIndeterminate = totalBytes <= 0;
+        ReportProgress(new TransferProgress(0, 0), force: true);
+    }
+
+    /// <summary>
+    /// Atualiza a barra no máximo a cada 120 ms: o motor confirma centenas de arquivos por
+    /// segundo e redesenhar a cada um só tiraria tempo de CPU da própria cópia.
+    /// </summary>
+    private void ReportProgress(TransferProgress progress, bool force = false)
+    {
+        var now = DateTime.UtcNow;
+        if (!force && lastProgressRefresh is { } last &&
+            now - last < TimeSpan.FromMilliseconds(120))
+        {
+            return;
+        }
+
+        lastProgressRefresh = now;
+
+        if (progressTotalBytes > 0)
+        {
+            var percentage = Math.Clamp(progress.Bytes * 100.0 / progressTotalBytes, 0, 100);
+            OperationProgressBar.Value = percentage;
+            ProgressAmountText.Text =
+                $"{FormatBytes(progress.Bytes)} de {FormatBytes(progressTotalBytes)}  ·  " +
+                $"{percentage:0}%";
+        }
+        else
+        {
+            ProgressAmountText.Text = progress.Files > 0
+                ? $"{progress.Files:N0} arquivos  ·  {FormatBytes(progress.Bytes)}"
+                : string.Empty;
+        }
+
+        if (progressTotalFiles > 0)
+        {
+            ProgressDetailsText.Text =
+                $"{progress.Files:N0} de {progressTotalFiles:N0} arquivos — {progressContext}";
+        }
+    }
+
+    private void ShowResult(
+        bool success,
+        string title,
+        string headline,
+        IReadOnlyList<ResultSection> sections,
+        string? failureReportPath = null)
     {
         LoadingRotation.BeginAnimation(System.Windows.Media.RotateTransform.AngleProperty, null);
+
+        var showImage = success && ResultSuccessIcon.Source is not null;
+        ResultSuccessIcon.Visibility = showImage ? Visibility.Visible : Visibility.Collapsed;
+        ResultIconText.Visibility = showImage ? Visibility.Collapsed : Visibility.Visible;
         ResultIconText.Text = success ? "✓" : "✗";
-        ResultIconText.Foreground = success
-            ? new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0x8A, 0xF0, 0xA5))
-            : new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0xF0, 0x8A, 0x8A));
+        ResultIconText.Foreground = success ? SuccessBrush : FailureBrush;
+
         ResultTitleText.Text = title;
-        ResultSummaryText.Text = summary;
+        ResultHeadlineText.Text = headline;
+
+        ResultDetailsPanel.Children.Clear();
+        foreach (var section in sections)
+        {
+            ResultDetailsPanel.Children.Add(BuildSectionBlock(section));
+        }
+
+        currentFailureReportPath = failureReportPath;
+        OpenFailureReportButton.Visibility = failureReportPath is not null
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+
         ShowPage(ResultPage);
+    }
+
+    private static StackPanel BuildSectionBlock(ResultSection section)
+    {
+        var block = new StackPanel { Margin = new Thickness(0, 0, 0, 12) };
+        block.Children.Add(new TextBlock
+        {
+            Text = section.Title,
+            Foreground = ToneBrush(section.Tone),
+            FontSize = 14,
+            FontWeight = FontWeights.Bold,
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 0, 0, 3)
+        });
+
+        foreach (var line in section.Lines)
+        {
+            block.Children.Add(new TextBlock
+            {
+                Text = line,
+                Foreground = BodyBrush,
+                FontSize = 14,
+                TextWrapping = TextWrapping.Wrap,
+                Margin = new Thickness(10, 1, 0, 0)
+            });
+        }
+
+        return block;
+    }
+
+    private static System.Windows.Media.Brush ToneBrush(ResultTone tone) => tone switch
+    {
+        ResultTone.Warning => WarningBrush,
+        ResultTone.Success => SuccessBrush,
+        _ => AccentBrush
+    };
+
+    private void OpenFailureReport_Click(object sender, RoutedEventArgs e)
+    {
+        if (currentFailureReportPath is null || !File.Exists(currentFailureReportPath))
+        {
+            MessageBox.Show(this, "O relatório não está mais disponível.", "GR BKP");
+            return;
+        }
+
+        try
+        {
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(
+                currentFailureReportPath)
+            {
+                UseShellExecute = true
+            });
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(
+                this,
+                $"Não foi possível abrir o relatório.\n\n{currentFailureReportPath}\n\n{ex.Message}",
+                "GR BKP");
+        }
+    }
+
+    /// <summary>
+    /// Rede de segurança para qualquer erro não previsto: no WPF, uma exceção que escapa de um
+    /// manipulador de evento derruba o processo inteiro — e, para o técnico, o app simplesmente
+    /// SOME no meio do trabalho, sem dizer nada. Aqui ele mostra o que aconteceu e continua vivo.
+    /// </summary>
+    internal void ShowUnexpectedError(Exception exception)
+    {
+        operationInProgress = false;
+        ShowResult(
+            false,
+            "Erro inesperado",
+            "A operação foi interrompida",
+            [
+                new ResultSection(
+                    "O que aconteceu",
+                    [exception.Message],
+                    ResultTone.Warning),
+                new ResultSection(
+                    "O que fazer",
+                    [
+                        "Anote a mensagem acima e tente de novo.",
+                        "Se a origem ainda estiver disponível, nada foi perdido."
+                    ])
+            ]);
     }
 
     private void Finish_Click(object sender, RoutedEventArgs e)
@@ -373,7 +578,8 @@ public partial class MainWindow : Window
         }
 
         operationInProgress = true;
-        ShowProgress("Fazendo backup…", $"Copiando dados de {profile.Name} para {packageRoot}");
+        progressContext = $"perfil {profile.Name}";
+        ShowProgress("Analisando arquivos…", $"Medindo o tamanho do perfil {profile.Name}");
         try
         {
             var applicableModules = new Dictionary<string, IMigrationModule>();
@@ -436,42 +642,95 @@ public partial class MainWindow : Window
                 new IntegrityPolicy("SHA256", true, "size-and-handle+sha256-critical"),
                 IsEncrypted: false);
 
+            // Medição prévia: percorre a mesma seleção só lendo tamanhos, sem abrir nenhum
+            // arquivo. Custa alguns segundos e é o que permite mostrar "3,4 GB de 8,9 GB" em vez
+            // de um indicador girando sem previsão nenhuma.
+            var measurement = await Task.Run(() => MeasureAsync(
+                selectionPolicy.Select(new ProfileSelection(profile.Name, profile.ProfileRoot, publicRoot)),
+                applicableModules,
+                discoveries));
+
+            ShowProgress("Fazendo backup…", $"Copiando o perfil {profile.Name}");
+            ProgressDetailsText.Text = $"Salvando em {packageRoot}";
+            SetProgressTotals(measurement.Files, measurement.Bytes);
+
             var result = await orchestrator.RunOrResumeBackupAsync(
                 new BackupRequest(Guid.NewGuid(), packageRoot, metadata),
-                BuildBackupItemsAsync(selectionRun, applicableModules, discoveries));
+                BuildBackupItemsAsync(selectionRun, applicableModules, discoveries),
+                new Progress<TransferProgress>(value => ReportProgress(value)));
 
             if (result.Result.State == PackageState.Complete)
             {
-                var machineLevelSummary = await CaptureMachineLevelServicesAsync(
+                var machineLevelLines = await CaptureMachineLevelServicesAsync(
                     sourceVolumeRoot, packageRoot);
+                var sections = new List<ResultSection>
+                {
+                    new("Onde ficou salvo", [packageRoot])
+                };
+
+                var skipped = DescribeSkippedFolders(selectionRun.Summary);
+                if (skipped.Count > 0)
+                {
+                    sections.Add(new ResultSection(
+                        "Pastas deixadas de fora pela regra de seleção", skipped, ResultTone.Warning));
+                }
+
+                if (machineLevelLines.Count > 0)
+                {
+                    sections.Add(new ResultSection("Itens do computador", machineLevelLines));
+                }
+
+                var reportPath = WriteFailureReport(
+                    packageRoot, "backup", result.Result.Errors, result.Result.Counters.FailedFiles);
+                if (result.Result.Counters.FailedFiles > 0)
+                {
+                    sections.Add(new ResultSection(
+                        $"{result.Result.Counters.FailedFiles} arquivo(s) não puderam ser copiados " +
+                        "e ficaram de fora",
+                        [
+                            "Abaixo está o relatório com cada arquivo e o motivo do erro.",
+                            "Causas comuns: arquivo aberto em outro programa, sem permissão de " +
+                            "leitura, ou danificado."
+                        ],
+                        ResultTone.Warning));
+                }
+
                 ShowResult(
                     true,
                     result.Outcome == OrchestratedBackupOutcome.Resumed
                         ? "Backup concluído (retomado)"
                         : "Backup concluído",
-                    $"{result.Result.Counters.CopiedFiles} arquivos • " +
-                    $"{FormatBytes(result.Result.Counters.CopiedBytes)}\n\n" +
-                    $"Os dados foram salvos em:\n{packageRoot}" +
-                    DescribeSkippedFolders(selectionRun.Summary) +
-                    machineLevelSummary +
-                    DescribeFileFailures(result.Result.Counters.FailedFiles, result.Result.Errors));
+                    $"{result.Result.Counters.CopiedFiles:N0} arquivos  ·  " +
+                    FormatBytes(result.Result.Counters.CopiedBytes),
+                    sections,
+                    reportPath);
             }
             else
             {
-                var errorSummary = result.Result.Errors.Count > 0
-                    ? string.Join("; ", result.Result.Errors.Select(err => err.Message))
-                    : "sem detalhes adicionais";
                 ShowResult(
                     false,
                     result.Result.State == PackageState.Paused
                         ? "Backup interrompido"
                         : "Backup não concluído",
-                    $"O backup não foi concluído. {errorSummary}");
+                    $"{result.Result.Counters.CopiedFiles:N0} arquivos copiados antes de parar",
+                    [
+                        new ResultSection(
+                            "Motivo",
+                            result.Result.Errors.Count > 0
+                                ? [.. result.Result.Errors.Select(error => error.Message).Distinct()]
+                                : ["Sem detalhes adicionais."],
+                            ResultTone.Warning),
+                        new ResultSection("Pasta do backup incompleto", [packageRoot])
+                    ]);
             }
         }
         catch (Exception ex)
         {
-            ShowResult(false, "Falha no backup", ex.Message);
+            ShowResult(
+                false,
+                "Falha no backup",
+                "A operação foi interrompida",
+                [new ResultSection("O que aconteceu", [ex.Message], ResultTone.Warning)]);
         }
         finally
         {
@@ -682,7 +941,7 @@ public partial class MainWindow : Window
     /// Tratado como melhor esforco (nunca reprova o backup): a config do FileZilla e os drivers
     /// sao um extra, nao o objetivo principal do backup do perfil.
     /// </summary>
-    private async Task<string> CaptureMachineLevelServicesAsync(string sourceVolumeRoot, string packageRoot)
+    private async Task<List<string>> CaptureMachineLevelServicesAsync(string sourceVolumeRoot, string packageRoot)
     {
         var lines = new List<string>();
 
@@ -712,7 +971,7 @@ public partial class MainWindow : Window
             lines.Add($"Drivers de impressora: não foi possível capturar ({ex.Message}).");
         }
 
-        return lines.Count > 0 ? "\n\n" + string.Join("\n", lines) : string.Empty;
+        return lines;
     }
 
     // ---- Conferência de pacote ----
@@ -759,31 +1018,52 @@ public partial class MainWindow : Window
                 ShowResult(
                     true,
                     "Backup íntegro",
-                    $"{report.VerifiedFiles} arquivos • {FormatBytes(report.VerifiedBytes)}\n\n" +
-                    $"Todos os arquivos da lista estão presentes e com o tamanho correto.\n" +
-                    $"{report.HashCheckedFiles} arquivo(s) crítico(s) também tiveram o conteúdo " +
-                    "conferido byte a byte.\n\n" +
-                    "Pode seguir com a formatação da origem.");
+                    $"{report.VerifiedFiles:N0} arquivos  ·  {FormatBytes(report.VerifiedBytes)}",
+                    [
+                        new ResultSection(
+                            "O que foi conferido",
+                            [
+                                "Todos os arquivos da lista estão presentes e com o tamanho correto.",
+                                $"{report.HashCheckedFiles:N0} arquivo(s) crítico(s) também tiveram " +
+                                "o conteúdo conferido byte a byte.",
+                                "A lista de arquivos do pacote está íntegra."
+                            ]),
+                        new ResultSection(
+                            "Conclusão",
+                            ["Pode seguir com a formatação da origem."],
+                            ResultTone.Success)
+                    ]);
             }
             else
             {
-                var examples = string.Join(
-                    "\n",
-                    report.Issues.Take(6).Select(issue => $"  • {issue.PackageRelativePath}: {issue.Detail}"));
-                var remaining = report.Issues.Count > 6
-                    ? $"\n  • … e mais {report.Issues.Count - 6} problema(s)"
-                    : string.Empty;
+                var reportPath = WriteVerificationReport(packageRoot, report);
                 ShowResult(
                     false,
                     "Backup com problemas",
-                    $"{report.Issues.Count} problema(s) encontrado(s):\n{examples}{remaining}\n\n" +
-                    "NÃO formate a origem. Refaça o backup deste perfil enquanto o SSD antigo " +
-                    "ainda está disponível.");
+                    $"{report.Issues.Count:N0} problema(s) encontrado(s)",
+                    [
+                        new ResultSection(
+                            "NÃO formate a origem",
+                            [
+                                "Refaça o backup deste perfil enquanto o SSD antigo ainda está " +
+                                "disponível.",
+                                "O relatório abaixo lista cada problema encontrado."
+                            ],
+                            ResultTone.Warning),
+                        new ResultSection(
+                            "Pacote conferido",
+                            [packageRoot])
+                    ],
+                    reportPath);
             }
         }
         catch (Exception ex)
         {
-            ShowResult(false, "Não foi possível conferir", ex.Message);
+            ShowResult(
+                false,
+                "Não foi possível conferir",
+                "A conferência não pôde ser feita",
+                [new ResultSection("O que aconteceu", [ex.Message], ResultTone.Warning)]);
         }
         finally
         {
@@ -876,62 +1156,129 @@ public partial class MainWindow : Window
             "GRBKP", "operations", operationId.ToString("N"));
 
         operationInProgress = true;
-        ShowProgress("Restaurando…", $"Restaurando dados para {restoreDestinationProfileRoot}");
+        progressContext = $"destino {Path.GetFileName(restoreDestinationProfileRoot)}";
+        ShowProgress("Restaurando…", $"Restaurando para {restoreDestinationProfileRoot}");
+
+        // Na restauração o total já é conhecido: está gravado no próprio pacote.
+        SetProgressTotals(
+            restoreMetadata?.Counters.CopiedFiles ?? 0,
+            restoreMetadata?.Counters.CopiedBytes ?? 0);
         try
         {
-            var result = await orchestrator.RunOrResumeRestoreAsync(new RestoreRequest(
-                operationId, restorePackageRoot, restoreDestinationProfileRoot, publicRoot, operationRoot));
+            var result = await orchestrator.RunOrResumeRestoreAsync(
+                new RestoreRequest(
+                    operationId, restorePackageRoot, restoreDestinationProfileRoot,
+                    publicRoot, operationRoot),
+                new Progress<TransferProgress>(value => ReportProgress(value)));
 
             if (result.OverallState == RestoreState.Complete)
             {
-                var moduleSummary = result.ModuleOutcome.Results.Count > 0
-                    ? string.Join(
-                        ", ",
-                        result.ModuleOutcome.Results.Select(r => $"{r.ModuleId}: {r.Outcome}"))
-                    : "nenhum módulo de aplicativo neste backup";
-                var machineLevelSummary = await RestoreMachineLevelServicesAsync(
+                var machineLevelLines = await RestoreMachineLevelServicesAsync(
                     restorePackageRoot,
                     restoreMetadata?.Profile.OriginalPath,
                     restoreDestinationProfileRoot);
-                var cleanupSummary = runCorporateCleanup
+                var cleanupLines = runCorporateCleanup
                     ? await ApplyCorporateCleanupAsync(restoreDestinationProfileRoot)
-                    : string.Empty;
+                    : [];
+
+                var sections = new List<ResultSection>
+                {
+                    new("Onde os dados foram restaurados", [restoreDestinationProfileRoot]),
+                    new(
+                        "Aplicativos",
+                        result.ModuleOutcome.Results.Count > 0
+                            ? [.. result.ModuleOutcome.Results.Select(DescribeModuleOutcome)]
+                            : ["Nenhum aplicativo neste backup."])
+                };
+
+                if (machineLevelLines.Count > 0)
+                {
+                    sections.Add(new ResultSection("Itens do computador", machineLevelLines));
+                }
+
+                if (cleanupLines.Count > 0)
+                {
+                    sections.Add(new ResultSection("Limpeza corporativa", cleanupLines));
+                }
+
+                var reportPath = WriteFailureReport(
+                    restorePackageRoot,
+                    "restauracao",
+                    result.PersonalDataResult.Errors,
+                    result.PersonalDataResult.Counters.FailedFiles);
+                if (result.PersonalDataResult.Counters.FailedFiles > 0)
+                {
+                    sections.Add(new ResultSection(
+                        $"{result.PersonalDataResult.Counters.FailedFiles} arquivo(s) não puderam " +
+                        "ser restaurados e ficaram de fora",
+                        [
+                            "Abaixo está o relatório com cada arquivo e o motivo do erro.",
+                            "Causas comuns: arquivo aberto em outro programa, sem permissão, ou " +
+                            "danificado no pacote."
+                        ],
+                        ResultTone.Warning));
+                }
+
+                sections.Add(new ResultSection(
+                    "Próximo passo",
+                    ["Reinicie este computador quando for possível para concluir a migração."],
+                    ResultTone.Warning));
+
                 ShowResult(
                     true,
                     "Restauração concluída",
-                    $"{result.PersonalDataResult.Counters.CopiedFiles} arquivos pessoais • " +
-                    $"{FormatBytes(result.PersonalDataResult.Counters.CopiedBytes)}\n\n" +
-                    $"Aplicativos: {moduleSummary}\n\n" +
-                    $"Dados restaurados para:\n{restoreDestinationProfileRoot}" +
-                    DescribeFileFailures(
-                        result.PersonalDataResult.Counters.FailedFiles,
-                        result.PersonalDataResult.Errors) +
-                    machineLevelSummary +
-                    cleanupSummary +
-                    "\n\nReinicie este computador quando for possível para concluir a migração.");
+                    $"{result.PersonalDataResult.Counters.CopiedFiles:N0} arquivos pessoais  ·  " +
+                    FormatBytes(result.PersonalDataResult.Counters.CopiedBytes),
+                    sections,
+                    reportPath);
             }
             else
             {
                 var failedModules = result.ModuleOutcome.Results
-                    .Where(r => r.Outcome == ModuleOutcome.Failed)
-                    .Select(r => r.ModuleId);
-                var engineErrors = result.PersonalDataResult.Errors.Count > 0
-                    ? "\n\n" + string.Join(
-                        "\n", result.PersonalDataResult.Errors.Select(error => error.Message).Distinct())
-                    : string.Empty;
-                var detail = (result.OverallState == RestoreState.Failed && failedModules.Any()
-                    ? $"Falha ao restaurar: {string.Join(", ", failedModules)}. " +
-                      "Os dados anteriores desses aplicativos foram preservados no destino."
-                    : "A restauração não foi concluída.") + engineErrors;
-                var title = result.OverallState == RestoreState.Paused
-                    ? "Restauração interrompida"
-                    : "Restauração não concluída";
-                ShowResult(false, title, detail);
+                    .Where(moduleResult => moduleResult.Outcome == ModuleOutcome.Failed)
+                    .Select(moduleResult => moduleResult.ModuleId)
+                    .ToList();
+
+                var sections = new List<ResultSection>
+                {
+                    new(
+                        "Motivo",
+                        result.PersonalDataResult.Errors.Count > 0
+                            ? [.. result.PersonalDataResult.Errors
+                                .Select(error => error.Message).Distinct()]
+                            : ["A restauração não foi concluída."],
+                        ResultTone.Warning)
+                };
+
+                if (failedModules.Count > 0)
+                {
+                    sections.Add(new ResultSection(
+                        "Aplicativos que falharam",
+                        [
+                            string.Join(", ", failedModules),
+                            "Os dados que já existiam no destino para esses aplicativos foram " +
+                            "preservados."
+                        ],
+                        ResultTone.Warning));
+                }
+
+                ShowResult(
+                    false,
+                    result.OverallState == RestoreState.Paused
+                        ? "Restauração interrompida"
+                        : "Restauração não concluída",
+                    $"{result.PersonalDataResult.Counters.CopiedFiles:N0} arquivos restaurados " +
+                    "antes de parar",
+                    sections);
             }
         }
         catch (Exception ex)
         {
-            ShowResult(false, "Falha na restauração", ex.Message);
+            ShowResult(
+                false,
+                "Falha na restauração",
+                "A operação foi interrompida",
+                [new ResultSection("O que aconteceu", [ex.Message], ResultTone.Warning)]);
         }
         finally
         {
@@ -947,7 +1294,7 @@ public partial class MainWindow : Window
     /// diferente do esperado numa instalação real — ver TODO em FileZillaMigrationService) não
     /// reprova a restauração inteira, só aparece no resumo para o técnico revisar manualmente.
     /// </summary>
-    private async Task<string> RestoreMachineLevelServicesAsync(
+    private async Task<List<string>> RestoreMachineLevelServicesAsync(
         string packageRoot, string? oldProfileRoot, string newProfileRoot)
     {
         var lines = new List<string>();
@@ -988,7 +1335,7 @@ public partial class MainWindow : Window
             lines.Add($"Drivers de impressora: falha ao restaurar ({ex.Message}).");
         }
 
-        return lines.Count > 0 ? "\n\n" + string.Join("\n", lines) : string.Empty;
+        return lines;
     }
 
     /// <summary>
@@ -997,18 +1344,18 @@ public partial class MainWindow : Window
     /// esforco, igual aos servicos de nivel de maquina: uma falha aqui aparece no resumo, mas nao
     /// reprova a restauracao.
     /// </summary>
-    private async Task<string> ApplyCorporateCleanupAsync(string destinationProfileRoot)
+    private async Task<List<string>> ApplyCorporateCleanupAsync(string destinationProfileRoot)
     {
         try
         {
             var destinationVolumeRoot = Path.GetPathRoot(destinationProfileRoot) ?? destinationProfileRoot;
             var result = await corporateCleanupService.ApplyAsync(
                 destinationVolumeRoot, destinationProfileRoot);
-            return "\n\n" + string.Join("\n", result.Messages);
+            return [.. result.Messages];
         }
         catch (Exception ex)
         {
-            return $"\n\nLimpeza corporativa: falha ({ex.Message}).";
+            return [$"Falha na limpeza: {ex.Message}"];
         }
     }
 
@@ -1018,45 +1365,167 @@ public partial class MainWindow : Window
     /// fotos do funcionário. Essa decisão ficava só no resumo interno, nunca chegava à tela: o
     /// técnico terminaria o backup sem saber que as imagens não foram copiadas.
     /// </summary>
-    private static string DescribeSkippedFolders(SelectionSummary summary)
-    {
-        var skipped = summary.Decisions
+    private static List<string> DescribeSkippedFolders(SelectionSummary summary) =>
+    [
+        .. summary.Decisions
             .Where(decision => decision.Kind == SelectionDecisionKind.IgnoredBelowThreshold)
-            .ToList();
-        if (skipped.Count == 0)
-        {
-            return string.Empty;
-        }
+            .Select(decision =>
+                $"{decision.LogicalFolder}: {decision.LocalFileCount} arquivo(s), abaixo do " +
+                $"mínimo de {decision.RequiredFileCount} — não incluída")
+    ];
 
-        var lines = skipped.Select(decision =>
-            $"  • {decision.LogicalFolder}: {decision.LocalFileCount} arquivo(s), " +
-            $"abaixo do mínimo de {decision.RequiredFileCount} — não incluída");
-        return "\n\nPastas deixadas de fora pela regra de seleção:\n" + string.Join("\n", lines);
+    private static string DescribeModuleOutcome(ModuleResult result)
+    {
+        var nome = result.ModuleId switch
+        {
+            "thunderbird" => "Thunderbird",
+            "firefox" => "Firefox",
+            "chrome" => "Google Chrome",
+            "edge" => "Microsoft Edge",
+            "office" => "Office / Outlook",
+            "adobe-acrobat" => "Adobe Acrobat Reader",
+            _ => result.ModuleId
+        };
+
+        var situacao = result.Outcome switch
+        {
+            ModuleOutcome.Applied => "restaurado",
+            ModuleOutcome.NotApplicable => "não havia dados neste backup",
+            ModuleOutcome.PreservedNotRestored => "preservado no pacote, não reintegrado",
+            _ => "FALHOU — dados anteriores do destino preservados"
+        };
+
+        return $"{nome}: {situacao}";
     }
 
     /// <summary>
-    /// Arquivos individuais que não puderam ser copiados (travados por outro processo, sem
-    /// permissão, corrompidos) não derrubam mais a operação inteira — mas o técnico PRECISA ver
-    /// que existiram, com exemplos de caminho, senão a resiliência viraria perda silenciosa.
+    /// Relatório em texto dos problemas achados na conferência, gravado dentro do próprio pacote
+    /// para o técnico poder abrir, ler com calma e levar consigo.
     /// </summary>
-    private static string DescribeFileFailures(
-        long failedFiles, IReadOnlyList<OperationError> errors)
+    private static string? WriteVerificationReport(
+        string packageRoot, PackageVerificationReport report)
     {
-        if (failedFiles <= 0)
+        try
         {
-            return string.Empty;
+            var reportsFolder = Path.Combine(packageRoot, "reports");
+            Directory.CreateDirectory(reportsFolder);
+            var reportPath = Path.Combine(
+                reportsFolder, $"conferencia-{DateTime.Now:yyyy-MM-dd_HH-mm-ss}.txt");
+
+            var linhas = new List<string>
+            {
+                "GR BKP — conferência de backup",
+                $"Data: {DateTime.Now:dd/MM/yyyy HH:mm:ss}",
+                $"Pacote: {packageRoot}",
+                $"Situação do pacote: {report.PackageStatus}",
+                $"Lista de arquivos íntegra: {(report.ManifestHashMatches ? "sim" : "NÃO")}",
+                $"Arquivos conferidos: {report.VerifiedFiles:N0}",
+                $"Problemas encontrados: {report.Issues.Count:N0}",
+                string.Empty,
+                "ATENÇÃO: não formate a origem enquanto houver problemas nesta lista.",
+                string.Empty,
+                new string('-', 78),
+                string.Empty
+            };
+
+            var numero = 0;
+            foreach (var issue in report.Issues)
+            {
+                numero++;
+                linhas.Add($"{numero}. {issue.PackageRelativePath}");
+                linhas.Add($"   Problema: {issue.Detail}");
+                linhas.Add(string.Empty);
+            }
+
+            File.WriteAllLines(reportPath, linhas, Encoding.UTF8);
+            return reportPath;
+        }
+        catch (Exception exception) when (
+            exception is IOException or UnauthorizedAccessException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Percorre a seleção inteira só lendo TAMANHOS, sem abrir nenhum arquivo, para conhecer o
+    /// total antes de começar a copiar. É o que permite uma barra de progresso de verdade.
+    /// </summary>
+    private static async Task<(long Files, long Bytes)> MeasureAsync(
+        SelectionRun selectionRun,
+        IReadOnlyDictionary<string, IMigrationModule> applicableModules,
+        IReadOnlyDictionary<string, ModuleDiscovery> discoveries)
+    {
+        long files = 0;
+        long bytes = 0;
+        await foreach (var item in BuildBackupItemsAsync(selectionRun, applicableModules, discoveries))
+        {
+            files++;
+            bytes += item.Length;
         }
 
-        var examples = errors
-            .Where(error => !string.IsNullOrWhiteSpace(error.RelativePath))
-            .Take(5)
-            .Select(error => $"  • {error.RelativePath}");
-        var remaining = failedFiles > 5 ? $"\n  • … e mais {failedFiles - 5}" : string.Empty;
+        return (files, bytes);
+    }
 
-        return $"\n\n⚠ {failedFiles} arquivo(s) não puderam ser copiados e ficaram de fora:\n" +
-            string.Join("\n", examples) + remaining +
-            "\nCausas comuns: arquivo aberto em outro programa, sem permissão de leitura, ou " +
-            "danificado. Confira esses itens manualmente.";
+    /// <summary>
+    /// Arquivos que não puderam ser copiados viram um relatório de texto dentro do próprio pacote,
+    /// com um arquivo por linha e o motivo do erro. Antes essa lista era despejada na tela de
+    /// resultado, onde só cabiam cinco caminhos gigantes e o resto virava "… e mais 34" — sem
+    /// nenhuma forma de o técnico ver quais eram.
+    /// </summary>
+    private static string? WriteFailureReport(
+        string packageRoot,
+        string operation,
+        IReadOnlyList<OperationError> errors,
+        long failedFiles)
+    {
+        if (failedFiles <= 0 || errors.Count == 0)
+        {
+            return null;
+        }
+
+        try
+        {
+            var reportsFolder = Path.Combine(packageRoot, "reports");
+            Directory.CreateDirectory(reportsFolder);
+            var reportPath = Path.Combine(
+                reportsFolder,
+                $"arquivos-nao-copiados-{operation}-{DateTime.Now:yyyy-MM-dd_HH-mm-ss}.txt");
+
+            var linhas = new List<string>
+            {
+                "GR BKP — arquivos que não puderam ser copiados",
+                $"Operação: {operation}",
+                $"Data: {DateTime.Now:dd/MM/yyyy HH:mm:ss}",
+                $"Pacote: {packageRoot}",
+                $"Total: {failedFiles} arquivo(s)",
+                string.Empty,
+                "Causas comuns: arquivo aberto em outro programa, sem permissão de leitura, ou",
+                "danificado. Arquivos internos do Windows (UsrClass.dat, settings.dat de apps da",
+                "Loja, arquivos LOCK) ficam travados enquanto o perfil está em uso e normalmente",
+                "não representam perda de dados do funcionário.",
+                string.Empty,
+                new string('-', 78),
+                string.Empty
+            };
+
+            var numero = 0;
+            foreach (var error in errors.Where(error => !string.IsNullOrWhiteSpace(error.RelativePath)))
+            {
+                numero++;
+                linhas.Add($"{numero}. {error.RelativePath}");
+                linhas.Add($"   Motivo: {error.Message}");
+                linhas.Add(string.Empty);
+            }
+
+            File.WriteAllLines(reportPath, linhas, Encoding.UTF8);
+            return reportPath;
+        }
+        catch (Exception exception) when (
+            exception is IOException or UnauthorizedAccessException)
+        {
+            return null;
+        }
     }
 
     private static string FormatBytes(long bytes)
@@ -1087,6 +1556,12 @@ public partial class MainWindow : Window
             Path.Combine(AppContext.BaseDirectory, "Assets", "icon-iniciarBKP.png"), StartBackupIcon);
         TryLoadImage(
             Path.Combine(AppContext.BaseDirectory, "Assets", "icon-extrairBKP.png"), ExtractBackupIcon);
+        TryLoadImage(
+            Path.Combine(AppContext.BaseDirectory, "Assets", "icon-conferirBKP.png"), VerifyBackupIcon);
+        TryLoadImage(
+            Path.Combine(AppContext.BaseDirectory, "Assets", "icon-sucesso.png"), ResultSuccessIcon);
+        // O ícone de sucesso só aparece quando o resultado é positivo; ShowResult decide.
+        ResultSuccessIcon.Visibility = Visibility.Collapsed;
     }
 
     private static void TryLoadImage(string path, Image image, UIElement? fallback = null)

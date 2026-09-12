@@ -79,7 +79,8 @@ public sealed class FirefoxMigrationModule(
                 $"{PackageModuleSubpath}/{relative}",
                 TransferClassification.ModuleData,
                 SourceRelativePath: relative,
-                Metadata: new FileMetadata(entry.CreationTimeUtc, entry.LastWriteTimeUtc, entry.Attributes));
+                Metadata: new FileMetadata(entry.CreationTimeUtc, entry.LastWriteTimeUtc, entry.Attributes),
+                Length: entry.Length);
         }
     }
 

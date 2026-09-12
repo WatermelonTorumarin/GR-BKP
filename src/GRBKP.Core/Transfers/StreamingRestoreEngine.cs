@@ -60,16 +60,29 @@ public sealed class StreamingRestoreEngine(
     public Task<RestoreOperationResult> RunAsync(
         RestoreRequest request,
         CancellationToken cancellationToken = default) =>
-        RunCoreAsync(request, resume: false, cancellationToken);
+        RunCoreAsync(request, resume: false, null, cancellationToken);
+
+    public Task<RestoreOperationResult> RunAsync(
+        RestoreRequest request,
+        IProgress<TransferProgress>? progress,
+        CancellationToken cancellationToken = default) =>
+        RunCoreAsync(request, resume: false, progress, cancellationToken);
 
     public Task<RestoreOperationResult> ResumeAsync(
         RestoreRequest request,
         CancellationToken cancellationToken = default) =>
-        RunCoreAsync(request, resume: true, cancellationToken);
+        RunCoreAsync(request, resume: true, null, cancellationToken);
+
+    public Task<RestoreOperationResult> ResumeAsync(
+        RestoreRequest request,
+        IProgress<TransferProgress>? progress,
+        CancellationToken cancellationToken = default) =>
+        RunCoreAsync(request, resume: true, progress, cancellationToken);
 
     private async Task<RestoreOperationResult> RunCoreAsync(
         RestoreRequest request,
         bool resume,
+        IProgress<TransferProgress>? progress,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
@@ -233,6 +246,7 @@ public sealed class StreamingRestoreEngine(
                     request.OperationRoot,
                     checkpoint,
                     cancellationToken).ConfigureAwait(false);
+                progress?.Report(new TransferProgress(counters.CopiedFiles, counters.CopiedBytes));
             }
 
             checkpoint = checkpoint with

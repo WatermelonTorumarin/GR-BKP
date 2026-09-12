@@ -44,6 +44,13 @@ public sealed record BackupOperationResult(
 
 public sealed record OperationError(string Code, string Message, string? RelativePath = null);
 
+/// <summary>
+/// Quanto já foi transferido, para a interface mostrar uma barra de progresso de verdade em vez
+/// de um indicador girando sem fim. O total esperado não vem daqui: quem chama já o conhece
+/// (medição prévia no backup, contadores do pacote na restauração).
+/// </summary>
+public sealed record TransferProgress(long Files, long Bytes);
+
 public sealed class StreamingBackupEngine(
     IFileSystemAdapter fileSystem,
     BackupPackageModule packageModule,
@@ -56,18 +63,37 @@ public sealed class StreamingBackupEngine(
         BackupRequest request,
         IAsyncEnumerable<TransferItem> items,
         CancellationToken cancellationToken = default)
-        => await RunCoreAsync(request, items, resume: false, cancellationToken).ConfigureAwait(false);
+        => await RunCoreAsync(request, items, resume: false, null, cancellationToken)
+            .ConfigureAwait(false);
+
+    public async Task<BackupOperationResult> RunAsync(
+        BackupRequest request,
+        IAsyncEnumerable<TransferItem> items,
+        IProgress<TransferProgress>? progress,
+        CancellationToken cancellationToken = default)
+        => await RunCoreAsync(request, items, resume: false, progress, cancellationToken)
+            .ConfigureAwait(false);
 
     public async Task<BackupOperationResult> ResumeAsync(
         BackupRequest request,
         IAsyncEnumerable<TransferItem> items,
         CancellationToken cancellationToken = default)
-        => await RunCoreAsync(request, items, resume: true, cancellationToken).ConfigureAwait(false);
+        => await RunCoreAsync(request, items, resume: true, null, cancellationToken)
+            .ConfigureAwait(false);
+
+    public async Task<BackupOperationResult> ResumeAsync(
+        BackupRequest request,
+        IAsyncEnumerable<TransferItem> items,
+        IProgress<TransferProgress>? progress,
+        CancellationToken cancellationToken = default)
+        => await RunCoreAsync(request, items, resume: true, progress, cancellationToken)
+            .ConfigureAwait(false);
 
     private async Task<BackupOperationResult> RunCoreAsync(
         BackupRequest request,
         IAsyncEnumerable<TransferItem> items,
         bool resume,
+        IProgress<TransferProgress>? progress,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
@@ -155,6 +181,7 @@ public sealed class StreamingBackupEngine(
                     counters = await CommitOldestAsync(
                         writer, window, counters, failures, linkedCancellation.Token)
                         .ConfigureAwait(false);
+                    progress?.Report(new TransferProgress(counters.CopiedFiles, counters.CopiedBytes));
                 }
             }
 
@@ -163,6 +190,7 @@ public sealed class StreamingBackupEngine(
                 counters = await CommitOldestAsync(
                     writer, window, counters, failures, linkedCancellation.Token)
                     .ConfigureAwait(false);
+                progress?.Report(new TransferProgress(counters.CopiedFiles, counters.CopiedBytes));
             }
 
             await producer.ConfigureAwait(false);

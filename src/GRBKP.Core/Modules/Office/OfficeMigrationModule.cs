@@ -96,7 +96,8 @@ public sealed class OfficeMigrationModule(
                     RequiresSha256: key == "outlook-data",
                     SourceRelativePath: relative,
                     Metadata: new FileMetadata(
-                        entry.CreationTimeUtc, entry.LastWriteTimeUtc, entry.Attributes));
+                        entry.CreationTimeUtc, entry.LastWriteTimeUtc, entry.Attributes),
+                    Length: entry.Length);
             }
         }
     }

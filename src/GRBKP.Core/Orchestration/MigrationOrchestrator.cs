@@ -47,9 +47,16 @@ public sealed class MigrationOrchestrator(
     private readonly OperationCheckpointStore restoreCheckpointStore = new(fileSystem, clock);
 
 
+    public Task<OrchestratedBackupResult> RunOrResumeBackupAsync(
+        BackupRequest request,
+        IAsyncEnumerable<TransferItem> items,
+        CancellationToken cancellationToken = default) =>
+        RunOrResumeBackupAsync(request, items, null, cancellationToken);
+
     public async Task<OrchestratedBackupResult> RunOrResumeBackupAsync(
         BackupRequest request,
         IAsyncEnumerable<TransferItem> items,
+        IProgress<TransferProgress>? progress,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);
@@ -59,8 +66,10 @@ public sealed class MigrationOrchestrator(
             .ConfigureAwait(false) is not null;
 
         var result = packageExists
-            ? await backupEngine.ResumeAsync(request, items, cancellationToken).ConfigureAwait(false)
-            : await backupEngine.RunAsync(request, items, cancellationToken).ConfigureAwait(false);
+            ? await backupEngine.ResumeAsync(request, items, progress, cancellationToken)
+                .ConfigureAwait(false)
+            : await backupEngine.RunAsync(request, items, progress, cancellationToken)
+                .ConfigureAwait(false);
 
         return new OrchestratedBackupResult(
             packageExists ? OrchestratedBackupOutcome.Resumed : OrchestratedBackupOutcome.Started,
@@ -80,8 +89,14 @@ public sealed class MigrationOrchestrator(
     /// uma falha de Module (ex.: validação do Thunderbird reprovada) marca o resultado geral como
     /// <see cref="RestoreState.Failed"/>, mesmo que os arquivos pessoais tenham sido copiados.
     /// </summary>
+    public Task<OrchestratedRestoreResult> RunOrResumeRestoreAsync(
+        RestoreRequest request,
+        CancellationToken cancellationToken = default) =>
+        RunOrResumeRestoreAsync(request, null, cancellationToken);
+
     public async Task<OrchestratedRestoreResult> RunOrResumeRestoreAsync(
         RestoreRequest request,
+        IProgress<TransferProgress>? progress,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);
@@ -98,8 +113,10 @@ public sealed class MigrationOrchestrator(
             .ConfigureAwait(false) is not null;
 
         var personalDataResult = operationAlreadyStarted
-            ? await restoreEngine.ResumeAsync(request, cancellationToken).ConfigureAwait(false)
-            : await restoreEngine.RunAsync(request, cancellationToken).ConfigureAwait(false);
+            ? await restoreEngine.ResumeAsync(request, progress, cancellationToken)
+                .ConfigureAwait(false)
+            : await restoreEngine.RunAsync(request, progress, cancellationToken)
+                .ConfigureAwait(false);
 
         if (personalDataResult.State != RestoreState.Complete)
         {

@@ -225,7 +225,8 @@ public sealed class SelectionPolicyModule(
             Metadata: new FileMetadata(
                 entry.CreationTimeUtc,
                 entry.LastWriteTimeUtc,
-                entry.Attributes));
+                entry.Attributes),
+            Length: entry.Length);
     }
 
     /// <summary>

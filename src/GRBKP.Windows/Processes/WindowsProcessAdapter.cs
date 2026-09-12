@@ -22,13 +22,29 @@ public sealed class WindowsProcessAdapter : IProcessAdapter
         var running = new List<string>();
         foreach (var processName in processNames)
         {
-            var processes = Process.GetProcessesByName(processName);
-            foreach (var process in processes)
+            var alive = false;
+            foreach (var process in Process.GetProcessesByName(processName))
             {
-                process.Dispose();
+                using (process)
+                {
+                    try
+                    {
+                        // Um processo recém-encerrado ainda aparece na lista do Windows por um
+                        // instante. Avisar o técnico de que "o Outlook está aberto" quando ele
+                        // acabou de fechar seria ruído — e, pior, faria a checagem parecer errada.
+                        alive |= !process.HasExited;
+                    }
+                    catch (Exception exception) when (
+                        exception is InvalidOperationException or Win32Exception)
+                    {
+                        // Sem permissão para inspecionar (processo de outro usuário/sistema):
+                        // ele existe, então conta como aberto.
+                        alive = true;
+                    }
+                }
             }
 
-            if (processes.Length > 0)
+            if (alive)
             {
                 running.Add(processName);
             }

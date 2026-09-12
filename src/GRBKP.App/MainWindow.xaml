@@ -52,7 +52,14 @@
                                 </StackPanel>
                             </Button>
                             <Button Style="{StaticResource SecondaryButton}" Click="GoToVerify_Click"
-                                    Content="Conferir um backup" HorizontalAlignment="Stretch" Margin="44,0" />
+                                    HorizontalAlignment="Stretch" Margin="44,0">
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock Text="Conferir um backup" VerticalAlignment="Center" />
+                                    <Image x:Name="VerifyBackupIcon" Width="20" Height="20" Visibility="Collapsed"
+                                           Stretch="Uniform" Margin="8,0,0,0"
+                                           RenderOptions.BitmapScalingMode="HighQuality" />
+                                </StackPanel>
+                            </Button>
                             <TextBlock Text="Confira antes de formatar o SSD antigo."
                                        Foreground="#FFE5F7FF" FontSize="13" TextAlignment="Center"
                                        Margin="0,10,0,0" />
@@ -227,21 +234,59 @@
                                 <Path Stroke="#FF9AE7FF" StrokeThickness="7" StrokeStartLineCap="Round" StrokeEndLineCap="Round"
                                       Data="M 38,6 A 32,32 0 0 1 70,38" />
                             </Grid>
-                            <TextBlock x:Name="ProgressDetailsText" Foreground="#FFE5F7FF" TextAlignment="Center"
-                                       TextWrapping="Wrap" Margin="20,8,20,0" />
+                            <!--
+                                Barra de progresso real: o total de bytes é conhecido antes de
+                                copiar (medição prévia no backup, contadores do pacote na
+                                restauração). Enquanto o total ainda não é conhecido — durante a
+                                própria medição — a barra fica indeterminada.
+                            -->
+                            <ProgressBar x:Name="OperationProgressBar" Width="520" Height="16"
+                                         Minimum="0" Maximum="100" Margin="0,6,0,0"
+                                         Background="#332A5878" BorderBrush="#88A8E5FF"
+                                         BorderThickness="1" Foreground="#FF6ED5F5" />
+                            <TextBlock x:Name="ProgressAmountText" Foreground="White" FontSize="17"
+                                       FontWeight="SemiBold" TextAlignment="Center" Margin="0,10,0,0" />
+                            <TextBlock x:Name="ProgressDetailsText" Foreground="#FFBFE6F7" FontSize="13"
+                                       TextAlignment="Center" TextWrapping="Wrap" Margin="20,6,20,0" />
                         </StackPanel>
                     </Grid>
 
                     <!-- Resultado (compartilhada entre backup e restauracao) -->
                     <Grid x:Name="ResultPage" Visibility="Collapsed">
-                        <StackPanel VerticalAlignment="Center" Width="700">
-                            <TextBlock x:Name="ResultIconText" Text="✓" Foreground="#FF8AF0A5" FontSize="68"
-                                       FontWeight="Bold" TextAlignment="Center" />
+                        <StackPanel VerticalAlignment="Center" Width="720">
+                            <Grid Height="74" Margin="0,0,0,2">
+                                <Image x:Name="ResultSuccessIcon" MaxHeight="66" Stretch="Uniform"
+                                       Visibility="Collapsed"
+                                       RenderOptions.BitmapScalingMode="HighQuality" />
+                                <TextBlock x:Name="ResultIconText" Text="✓" Foreground="#FF8AF0A5" FontSize="62"
+                                           FontWeight="Bold" TextAlignment="Center"
+                                           VerticalAlignment="Center" />
+                            </Grid>
                             <TextBlock x:Name="ResultTitleText" Foreground="White" FontSize="27" FontWeight="Bold"
                                        TextAlignment="Center" />
-                            <TextBlock x:Name="ResultSummaryText" Foreground="#FFE5F7FF" FontSize="16"
-                                       TextAlignment="Center" TextWrapping="Wrap" Margin="0,12,0,18" />
-                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+
+                            <!-- Linha de destaque: o número que o técnico olha primeiro. -->
+                            <TextBlock x:Name="ResultHeadlineText" Foreground="#FF9AE7FF" FontSize="19"
+                                       FontWeight="SemiBold" TextAlignment="Center" Margin="0,8,0,0" />
+
+                            <!--
+                                Blocos montados em código, cada um com título e linhas próprias.
+                                Antes era tudo um parágrafo único centralizado, onde caminho de
+                                pasta, aviso e lista de erro se misturavam.
+                            -->
+                            <Border Background="#33123B55" BorderBrush="#554E9BC4" BorderThickness="1"
+                                    CornerRadius="12" Padding="18,14" Margin="0,14,0,0"
+                                    MaxHeight="250">
+                                <ScrollViewer VerticalScrollBarVisibility="Auto"
+                                              HorizontalScrollBarVisibility="Disabled">
+                                    <StackPanel x:Name="ResultDetailsPanel" />
+                                </ScrollViewer>
+                            </Border>
+
+                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,18,0,0">
+                                <Button x:Name="OpenFailureReportButton" Style="{StaticResource SecondaryButton}"
+                                        Content="Ver relatório de erros" Click="OpenFailureReport_Click"
+                                        Visibility="Collapsed" Margin="0,0,10,0" />
                                 <Button Content="Finalizar" Click="Finish_Click" />
                             </StackPanel>
                         </StackPanel>

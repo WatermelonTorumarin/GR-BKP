@@ -22,7 +22,13 @@ public sealed record TransferItem(
     TransferClassification Classification,
     bool RequiresSha256 = false,
     string? SourceRelativePath = null,
-    FileMetadata? Metadata = null);
+    FileMetadata? Metadata = null,
+    /// <summary>
+    /// Tamanho conhecido na hora da descoberta. Serve para somar o total ANTES de copiar e assim
+    /// mostrar uma barra de progresso de verdade ("3,4 GB de 8,9 GB") em vez de só um indicador
+    /// girando sem fim.
+    /// </summary>
+    long Length = 0);
 
 public enum TransferClassification
 {
