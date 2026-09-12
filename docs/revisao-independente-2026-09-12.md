@@ -128,7 +128,10 @@ que tem comportamento diferente. Por isso medir na plataforma certa importa.)
 
 ---
 
-## 3. Recomendações — em ordem de valor
+## 3. Recomendações — TODAS IMPLEMENTADAS
+
+> **Atualização:** as quatro recomendações abaixo foram aprovadas e implementadas no mesmo dia.
+> O texto original de cada uma está mantido, com o resultado logo em seguida.
 
 ### 3.1 — Botão "Conferir backup" (ALTO valor, esforço baixo)
 
@@ -169,6 +172,69 @@ diferença para a cópia crua (2,7x) é inerente ao que o motor faz por arquivo:
 renomeação atômica, três chamadas de metadados e as linhas de manifesto. Mexer nisso exige
 cuidado com ordem de checkpoint — não é mudança para fazer às pressas.
 
+---
+
+## 3-bis. O que foi implementado (12/09, mesmo dia)
+
+### ✅ 3.1 — Conferir backup
+
+Terceiro botão na tela inicial: **"Conferir um backup"**. Relê o pacote inteiro e cruza com o
+manifesto — pacote finalizado? `files.jsonl` íntegro? todo arquivo listado existe com o tamanho
+certo? arquivos críticos ainda batem com o hash? O resultado é direto: *"pode seguir com a
+formatação da origem"* ou *"NÃO formate a origem"* com a lista de problemas.
+
+Deliberadamente **sem nenhuma ação corretiva**: se algo está errado, a resposta certa é refazer o
+backup enquanto o SSD antigo ainda existe.
+
+7 testes, um para cada forma de um pacote estar errado: arquivo faltando, arquivo truncado,
+**corrupção silenciosa com o mesmo tamanho** (o caso que só o hash pega), manifesto adulterado e
+pacote nunca finalizado.
+
+### ✅ 3.2 — Hash em arquivos críticos
+
+Ligado exatamente como sugerido: **documentos do funcionário e bases do Outlook (.pst/.ost)**.
+O critério é "o que ninguém percebe se corromper até precisar, com a origem já formatada".
+Downloads e caches ficam de fora — são recuperáveis de outro jeito e não justificam o custo.
+
+O hash é calculado no mesmo buffer da cópia, sem I/O extra. A política gravada no pacote agora diz
+`HashCriticalFiles: true`, `"size-and-handle+sha256-critical"` — que é o que o campo sempre
+significou e nunca tinha sido usado.
+
+### ✅ 3.3 — Retomada pela interface
+
+Ao iniciar um backup, o app procura entre os backups daquele funcionário o mais recente que ficou
+pelo caminho e pergunta: **"retomar de onde parou ou começar do zero?"**, mostrando quantos
+arquivos e quantos bytes já foram copiados. O resultado final indica se foi retomado.
+
+Pasta que não é pacote e `package.json` ilegível são ignorados — procurar pendências é
+conveniência e não pode derrubar a tela de backup.
+
+### ✅ 3.4 — Cópia paralela
+
+| concorrência | tempo | throughput |
+|---|---|---|
+| 1 (serial) | 5.597 ms | 357 arq/s |
+| 2 | 3.102 ms | 645 arq/s |
+| **4 (padrão)** | **2.603 ms** | **768 arq/s** |
+| 8 | 2.590 ms | 772 arq/s (sem ganho) |
+
+Somado à gravação de checkpoint em lotes, o motor saiu de **199 para 768 arquivos por segundo —
+3,9x no total**, a 75% da velocidade de uma cópia crua do Windows mesmo fazendo manifesto,
+journal, checkpoint, renomeação atômica e metadados por arquivo.
+
+**O risco aqui nunca foi desempenho, foi ordem.** A restauração percorre o manifesto pulando tudo
+com sequência menor ou igual ao último confirmado — um manifesto fora de ordem faria a restauração
+pular arquivos. Por isso o desenho é uma janela deslizante: até 4 cópias correm ao mesmo tempo,
+mas o commit é sempre o da cópia mais antiga, na ordem do produtor. O primeiro teste do arquivo
+novo faz as cópias terminarem de propósito na ordem errada e exige manifesto ordenado.
+
+Ao abortar, as cópias em voo que chegaram a terminar são apagadas do pacote: senão existiriam
+fisicamente sem constar no manifesto.
+
+---
+
+## 4. Recomendações que continuam abertas
+
 ### 3.5 — Decidir o que fazer com pastas redirecionadas (MÉDIO)
 
 Hoje eu apenas **aviso**. O passo natural seria oferecer incluir a pasta redirecionada no backup
@@ -182,7 +248,7 @@ escrita é irrisório), mas vale saber que existe.
 
 ---
 
-## 4. O que continua pendente de hardware real (Fase 6)
+## 5. O que continua pendente de hardware real (Fase 6)
 
 Nada disso pode ser verificado sem os computadores da empresa:
 
