@@ -6,6 +6,13 @@
          forma suportada de controlar servicos do Windows a partir do .NET moderno; nao vem
          embutido no net10.0-windows como as extensoes de ACL do System.IO vem. -->
     <PackageReference Include="System.ServiceProcess.ServiceController" Version="9.0.0" />
+    <!-- EricZimmerman/Registry (MIT) — parser puro do arquivo binario de um hive de registro,
+         usado por ferramentas forenses conhecidas. NUNCA chama RegLoadKey/RegUnLoadKey nem toca
+         no registro ao vivo do Windows: so le bytes de um arquivo, sem precisar de privilegio
+         elevado nem risco de deixar um hive "preso" montado. Pesquisado e escolhido deliberadamente
+         como alternativa segura a abordagem original (P/Invoke em RegLoadKey), que nao havia como
+         testar com seguranca neste ambiente. -->
+    <PackageReference Include="Registry" Version="2026.5.0" />
   </ItemGroup>
 
   <PropertyGroup>

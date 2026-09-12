@@ -16,12 +16,25 @@ public interface IWindowsServiceAdapter
     Task StartAsync(string serviceName, CancellationToken cancellationToken = default);
 }
 
-public interface IRegistryAdapter
+/// <summary>
+/// Le uma chave e suas subchaves diretamente do ARQUIVO de um hive de registro — nunca monta
+/// nada no registro ao vivo do Windows (sem RegLoadKey/RegUnLoadKey). Existe especificamente
+/// para ler o registro de um SSD antigo desmontado (ex.: <c>ProfileList</c> do
+/// <c>SOFTWARE</c> hive em <c>F:\Windows\System32\config\SOFTWARE</c>), onde nao ha registro
+/// ao vivo pra consultar.
+/// </summary>
+public interface IOfflineRegistryHiveReader
 {
-    Task<IReadOnlyDictionary<string, string?>> ReadValuesAsync(
-        RegistryReadRequest request,
+    Task<IReadOnlyList<OfflineRegistrySubKey>> EnumerateSubKeysAsync(
+        string hiveFilePath,
+        string keyPath,
+        IReadOnlyCollection<string> valueNames,
         CancellationToken cancellationToken = default);
 }
+
+public sealed record OfflineRegistrySubKey(
+    string Name,
+    IReadOnlyDictionary<string, string?> Values);
 
 public interface IWindowsCommandAdapter
 {
@@ -48,19 +61,6 @@ public interface IRebootAdapter
 public interface IClock
 {
     DateTimeOffset UtcNow { get; }
-}
-
-public sealed record RegistryReadRequest(
-    RegistryHiveKind Hive,
-    string KeyPath,
-    IReadOnlyCollection<string> ValueNames);
-
-public enum RegistryHiveKind
-{
-    CurrentUser,
-    LocalMachine,
-    OfflineUser,
-    OfflineLocalMachine
 }
 
 public sealed record WindowsCommandRequest(
