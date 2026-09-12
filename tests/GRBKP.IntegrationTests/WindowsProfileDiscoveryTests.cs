@@ -1,3 +1,5 @@
+using System.Security.AccessControl;
+using System.Security.Principal;
 using GRBKP.Core.Discovery;
 using GRBKP.Windows.FileSystem;
 
@@ -5,6 +7,65 @@ namespace GRBKP.IntegrationTests;
 
 public sealed class WindowsProfileDiscoveryTests
 {
+    /// <summary>
+    /// Mesma classe do bug que já apareceu em produção (a junction "Meus Vídeos" derrubava o
+    /// backup inteiro): uma única pasta inacessível dentro de Users não pode impedir o técnico de
+    /// enxergar os demais perfis. Aqui a pasta problemática tem leitura NEGADA por ACL, que é o
+    /// caso real de um SSD antigo cujas permissões apontam para o SID de outra máquina.
+    /// </summary>
+    [Fact]
+    public async Task DiscoverAsync_StillListsOtherProfiles_WhenOneFolderInsideUsersIsUnreadable()
+    {
+        using var fixture = new TemporaryDirectory();
+        var fileSystem = new WindowsFileSystemAdapter();
+        var volumeRoot = fixture.PathFor("F");
+        fixture.CreateProfile(volumeRoot, "auxatc", withAppData: true);
+        fixture.CreateProfile(volumeRoot, "protegido", withAppData: true);
+        fixture.CreateProfile(volumeRoot, "lucas.ferreira", withAppData: true);
+
+        var protectedProfile = Path.Combine(volumeRoot, "Users", "protegido");
+        DenyReadAccess(protectedProfile);
+        try
+        {
+            var discovery = new WindowsProfileDiscovery(fileSystem);
+
+            var profiles = await discovery.DiscoverAsync(volumeRoot, CancellationToken.None);
+
+            Assert.Contains(profiles, profile => profile.Name == "auxatc");
+            Assert.Contains(profiles, profile => profile.Name == "lucas.ferreira");
+        }
+        finally
+        {
+            RestoreAccess(protectedProfile);
+        }
+    }
+
+    private static void DenyReadAccess(string directoryPath)
+    {
+        var directory = new DirectoryInfo(directoryPath);
+        var security = directory.GetAccessControl();
+        security.AddAccessRule(new FileSystemAccessRule(
+            WindowsIdentity.GetCurrent().User!,
+            FileSystemRights.ListDirectory | FileSystemRights.ReadData,
+            InheritanceFlags.None,
+            PropagationFlags.NoPropagateInherit,
+            AccessControlType.Deny));
+        directory.SetAccessControl(security);
+    }
+
+    private static void RestoreAccess(string directoryPath)
+    {
+        var directory = new DirectoryInfo(directoryPath);
+        var security = directory.GetAccessControl();
+        security.RemoveAccessRuleAll(new FileSystemAccessRule(
+            WindowsIdentity.GetCurrent().User!,
+            FileSystemRights.ListDirectory | FileSystemRights.ReadData,
+            InheritanceFlags.None,
+            PropagationFlags.NoPropagateInherit,
+            AccessControlType.Deny));
+        directory.SetAccessControl(security);
+    }
+
     [Fact]
     public async Task DiscoverAsync_ClassifiesRealProfiles_TemplatesAndSuspiciousFoldersCorrectly()
     {

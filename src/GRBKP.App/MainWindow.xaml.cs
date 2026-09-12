@@ -419,6 +419,7 @@ public partial class MainWindow : Window
                     $"{result.Result.Counters.CopiedFiles} arquivos • " +
                     $"{FormatBytes(result.Result.Counters.CopiedBytes)}\n\n" +
                     $"Os dados foram salvos em:\n{packageRoot}" +
+                    DescribeSkippedFolders(selectionRun.Summary) +
                     machineLevelSummary +
                     DescribeFileFailures(result.Result.Counters.FailedFiles, result.Result.Errors));
             }
@@ -769,6 +770,28 @@ public partial class MainWindow : Window
         {
             return $"\n\nLimpeza corporativa: falha ({ex.Message}).";
         }
+    }
+
+    /// <summary>
+    /// A política de seleção pode deliberadamente DEIXAR DE FORA uma pasta inteira — hoje o caso
+    /// é Imagens com menos de 21 arquivos, tratada como pasta de amostras do Windows e não como
+    /// fotos do funcionário. Essa decisão ficava só no resumo interno, nunca chegava à tela: o
+    /// técnico terminaria o backup sem saber que as imagens não foram copiadas.
+    /// </summary>
+    private static string DescribeSkippedFolders(SelectionSummary summary)
+    {
+        var skipped = summary.Decisions
+            .Where(decision => decision.Kind == SelectionDecisionKind.IgnoredBelowThreshold)
+            .ToList();
+        if (skipped.Count == 0)
+        {
+            return string.Empty;
+        }
+
+        var lines = skipped.Select(decision =>
+            $"  • {decision.LogicalFolder}: {decision.LocalFileCount} arquivo(s), " +
+            $"abaixo do mínimo de {decision.RequiredFileCount} — não incluída");
+        return "\n\nPastas deixadas de fora pela regra de seleção:\n" + string.Join("\n", lines);
     }
 
     /// <summary>

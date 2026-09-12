@@ -218,8 +218,8 @@ public sealed class StreamingBackupEngine(
                 counters,
                 [.. failures, new OperationError(
                     "destination-disk-full",
-                    "O disco de destino ficou sem espaço. Libere espaço e repita o backup: " +
-                    "os arquivos já copiados serão aproveitados.")]);
+                    "O disco de destino ficou sem espaço. Libere espaço antes de refazer o " +
+                    "backup deste perfil — o pacote incompleto pode ser apagado.")]);
         }
         catch
         {

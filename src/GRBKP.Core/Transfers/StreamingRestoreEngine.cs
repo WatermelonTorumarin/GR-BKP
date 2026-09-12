@@ -293,7 +293,7 @@ public sealed class StreamingRestoreEngine(
                 [.. failures, new OperationError(
                     "destination-disk-full",
                     "O disco de destino ficou sem espaço durante a restauração. Libere espaço e " +
-                    "repita: os arquivos já restaurados serão aproveitados.")]);
+                    "repita a restauração deste pacote.")]);
         }
         catch (InvalidPackagePathException exception)
         {
