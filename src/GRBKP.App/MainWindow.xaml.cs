@@ -16,6 +16,7 @@ using GRBKP.Core.Transfers;
 using GRBKP.Windows;
 using GRBKP.Windows.FileSystem;
 using GRBKP.Windows.Processes;
+using GRBKP.Windows.Registry;
 
 namespace GRBKP.App;
 
@@ -32,6 +33,8 @@ public partial class MainWindow : Window
     private readonly IProcessAdapter processAdapter = new WindowsProcessAdapter();
     private readonly IClock clock = new SystemClock();
     private readonly WindowsProfileDiscovery profileDiscovery;
+    private readonly OfflineProfileSidResolver sourceSidResolver;
+    private readonly LiveProfileSidReader destinationSidReader = new();
     private readonly BackupPackageModule packageModule;
     private readonly StreamingBackupEngine backupEngine;
     private readonly IReadOnlyDictionary<string, IMigrationModule> modules;
@@ -47,6 +50,7 @@ public partial class MainWindow : Window
     {
         InitializeComponent();
         profileDiscovery = new WindowsProfileDiscovery(fileSystem);
+        sourceSidResolver = new OfflineProfileSidResolver(new OfflineRegistryHiveReader());
         packageModule = new BackupPackageModule(fileSystem, clock);
         backupEngine = new StreamingBackupEngine(fileSystem, packageModule, clock);
         modules = MigrationModuleCatalog.CreateAll(fileSystem, processAdapter);
@@ -331,6 +335,22 @@ public partial class MainWindow : Window
             var selectionRun = selectionPolicy.Select(
                 new ProfileSelection(profile.Name, profile.ProfileRoot, publicRoot));
 
+            // SID do perfil de origem, lido offline do SOFTWARE hive do proprio SSD antigo — vai
+            // no pacote pra a restauracao poder confirmar depois que o destino e o mesmo usuario
+            // de dominio (ver ConfirmRestore_Click), sem depender so do nome da pasta baterem.
+            string? sourceProfileSid = null;
+            try
+            {
+                var sids = await sourceSidResolver.ResolveSidsByProfileRootAsync(
+                    sourceVolumeRoot, [profile]);
+                sids.TryGetValue(profile.ProfileRoot, out sourceProfileSid);
+            }
+            catch (Exception)
+            {
+                // SID e um extra de seguranca, nao um requisito — se o hive nao puder ser lido
+                // (formato inesperado, chave ausente etc.), o backup segue sem essa informacao.
+            }
+
             var metadata = new PackageMetadata(
                 "1.0",
                 "1.0.0-fase2",
@@ -343,7 +363,7 @@ public partial class MainWindow : Window
                     sourceVolumeRoot,
                     Environment.OSVersion.VersionString,
                     RuntimeInformation.ProcessArchitecture.ToString()),
-                new SourceProfile(profile.Name, profile.ProfileRoot, null),
+                new SourceProfile(profile.Name, profile.ProfileRoot, sourceProfileSid),
                 "fase2-basica",
                 [.. applicableModules.Keys],
                 DurableCounters.Empty,
@@ -431,13 +451,34 @@ public partial class MainWindow : Window
                 $"Origem: {packageRoot}\n" +
                 $"Perfil: {metadata.Profile.Name}\n" +
                 $"Destino: {destinationRoot}\n" +
-                $"Módulos no pacote: {(metadata.Modules.Count > 0 ? string.Join(", ", metadata.Modules) : "nenhum")}";
+                $"Módulos no pacote: {(metadata.Modules.Count > 0 ? string.Join(", ", metadata.Modules) : "nenhum")}\n" +
+                DescribeSidMatch(metadata.Profile.Sid, destinationRoot);
             ShowPage(RestoreConfirmPage);
         }
         catch (Exception ex)
         {
             RestoreSourceStatusText.Text = $"Não foi possível ler o backup em {packageRoot}: {ex.Message}";
         }
+    }
+
+    /// <summary>
+    /// Le os perfis de destino ao vivo (I/O) e delega a comparacao em si para
+    /// <see cref="ProfileSidMatcher"/> (logica pura, testada em GRBKP.Core.Tests).
+    /// </summary>
+    private string DescribeSidMatch(string? packageSid, string destinationProfileRoot)
+    {
+        IReadOnlyList<ProfileSidInfo> destinationProfiles;
+        try
+        {
+            destinationProfiles = destinationSidReader.ResolveAll();
+        }
+        catch (Exception)
+        {
+            return "Conferência de usuário: não foi possível consultar o registro do destino.";
+        }
+
+        return ProfileSidMatcher.Describe(packageSid, destinationProfiles, destinationProfileRoot)
+            .Message;
     }
 
     private void RestoreConfirmBack_Click(object sender, RoutedEventArgs e) => ShowPage(RestoreSourcePage);
