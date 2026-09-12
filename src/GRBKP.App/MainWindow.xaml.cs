@@ -7,6 +7,8 @@ using System.Windows.Media.Imaging;
 using GRBKP.Core.Adapters;
 using GRBKP.Core.Discovery;
 using GRBKP.Core.Modules;
+using GRBKP.Core.Modules.FileZilla;
+using GRBKP.Core.Modules.Printing;
 using GRBKP.Core.Operations;
 using GRBKP.Core.Orchestration;
 using GRBKP.Core.Packages;
@@ -14,9 +16,11 @@ using GRBKP.Core.Restore;
 using GRBKP.Core.Selection;
 using GRBKP.Core.Transfers;
 using GRBKP.Windows;
+using GRBKP.Windows.Commands;
 using GRBKP.Windows.FileSystem;
 using GRBKP.Windows.Processes;
 using GRBKP.Windows.Registry;
+using GRBKP.Windows.Services;
 
 namespace GRBKP.App;
 
@@ -39,12 +43,15 @@ public partial class MainWindow : Window
     private readonly StreamingBackupEngine backupEngine;
     private readonly IReadOnlyDictionary<string, IMigrationModule> modules;
     private readonly MigrationOrchestrator orchestrator;
+    private readonly FileZillaMigrationService fileZillaService;
+    private readonly PrinterDriverMigrationService printerDriverService;
 
     private string? sourceVolumeRoot;
     private readonly List<(DiscoveredProfile Profile, RadioButton Control)> profileOptions = [];
 
     private string? restorePackageRoot;
     private string? restoreDestinationProfileRoot;
+    private PackageMetadata? restoreMetadata;
 
     public MainWindow()
     {
@@ -62,6 +69,9 @@ public partial class MainWindow : Window
         var moduleCoordinator = new AppModuleRestoreCoordinator(packageModule, modules);
         orchestrator = new MigrationOrchestrator(
             fileSystem, packageModule, clock, backupEngine, restoreEngine, moduleCoordinator);
+        fileZillaService = new FileZillaMigrationService(fileSystem, new WindowsServiceAdapter());
+        printerDriverService = new PrinterDriverMigrationService(
+            fileSystem, new WindowsCommandAdapter(), new PrinterDriverDiscovery(fileSystem));
 
         LoadVisualAssets();
     }
@@ -376,12 +386,15 @@ public partial class MainWindow : Window
 
             if (result.Result.State == PackageState.Complete)
             {
+                var machineLevelSummary = await CaptureMachineLevelServicesAsync(
+                    sourceVolumeRoot, packageRoot);
                 ShowResult(
                     true,
                     "Backup concluído",
                     $"{result.Result.Counters.CopiedFiles} arquivos • " +
                     $"{FormatBytes(result.Result.Counters.CopiedBytes)}\n\n" +
-                    $"Os dados foram salvos em:\n{packageRoot}");
+                    $"Os dados foram salvos em:\n{packageRoot}" +
+                    machineLevelSummary);
             }
             else
             {
@@ -423,6 +436,47 @@ public partial class MainWindow : Window
         }
     }
 
+    /// <summary>
+    /// FileZilla Server e drivers de impressora sao de NIVEL DE MAQUINA (dependem da raiz do
+    /// volume, nao da raiz do perfil) — nao se encaixam no contrato IMigrationModule e por isso
+    /// nao passam pelo AppModuleRestoreCoordinator; sao capturados diretamente para dentro do
+    /// mesmo pacote, num passo a mais apos os dados pessoais/Modules de perfil terminarem.
+    /// Tratado como melhor esforco (nunca reprova o backup): a config do FileZilla e os drivers
+    /// sao um extra, nao o objetivo principal do backup do perfil.
+    /// </summary>
+    private async Task<string> CaptureMachineLevelServicesAsync(string sourceVolumeRoot, string packageRoot)
+    {
+        var lines = new List<string>();
+
+        try
+        {
+            var fileZillaResult = await fileZillaService.CaptureAsync(sourceVolumeRoot, packageRoot);
+            if (fileZillaResult.Captured)
+            {
+                lines.Add("FileZilla Server: configuração capturada.");
+            }
+        }
+        catch (Exception ex)
+        {
+            lines.Add($"FileZilla Server: não foi possível capturar ({ex.Message}).");
+        }
+
+        try
+        {
+            var printerResult = await printerDriverService.CaptureAsync(sourceVolumeRoot, packageRoot);
+            if (printerResult.Drivers.Count > 0)
+            {
+                lines.Add($"Drivers de impressora: {printerResult.Drivers.Count} capturado(s).");
+            }
+        }
+        catch (Exception ex)
+        {
+            lines.Add($"Drivers de impressora: não foi possível capturar ({ex.Message}).");
+        }
+
+        return lines.Count > 0 ? "\n\n" + string.Join("\n", lines) : string.Empty;
+    }
+
     // ---- Fluxo de restauração ----
 
     private async void RestoreSourceNext_Click(object sender, RoutedEventArgs e)
@@ -447,6 +501,7 @@ public partial class MainWindow : Window
 
             restorePackageRoot = packageRoot;
             restoreDestinationProfileRoot = destinationRoot;
+            restoreMetadata = metadata;
             RestoreConfirmationDetails.Text =
                 $"Origem: {packageRoot}\n" +
                 $"Perfil: {metadata.Profile.Name}\n" +
@@ -513,13 +568,18 @@ public partial class MainWindow : Window
                         ", ",
                         result.ModuleOutcome.Results.Select(r => $"{r.ModuleId}: {r.Outcome}"))
                     : "nenhum módulo de aplicativo neste backup";
+                var machineLevelSummary = await RestoreMachineLevelServicesAsync(
+                    restorePackageRoot,
+                    restoreMetadata?.Profile.OriginalPath,
+                    restoreDestinationProfileRoot);
                 ShowResult(
                     true,
                     "Restauração concluída",
                     $"{result.PersonalDataResult.Counters.CopiedFiles} arquivos pessoais • " +
                     $"{FormatBytes(result.PersonalDataResult.Counters.CopiedBytes)}\n\n" +
                     $"Aplicativos: {moduleSummary}\n\n" +
-                    $"Dados restaurados para:\n{restoreDestinationProfileRoot}");
+                    $"Dados restaurados para:\n{restoreDestinationProfileRoot}" +
+                    machineLevelSummary);
             }
             else
             {
@@ -537,6 +597,58 @@ public partial class MainWindow : Window
         {
             ShowResult(false, "Falha na restauração", ex.Message);
         }
+    }
+
+    /// <summary>
+    /// Contraparte de <see cref="CaptureMachineLevelServicesAsync"/> na restauração — acionada só
+    /// depois que a restauração de perfil (dados pessoais + Modules) termina com sucesso, já que
+    /// revincular o FileZilla com um perfil de destino que nem chegou a ser restaurado não faria
+    /// sentido. Também melhor esforço: uma falha aqui (ex.: serviço do FileZilla com nome
+    /// diferente do esperado numa instalação real — ver TODO em FileZillaMigrationService) não
+    /// reprova a restauração inteira, só aparece no resumo para o técnico revisar manualmente.
+    /// </summary>
+    private async Task<string> RestoreMachineLevelServicesAsync(
+        string packageRoot, string? oldProfileRoot, string newProfileRoot)
+    {
+        var lines = new List<string>();
+
+        if (oldProfileRoot is not null)
+        {
+            var destinationVolumeRoot = Path.GetPathRoot(newProfileRoot) ?? newProfileRoot;
+            try
+            {
+                var fileZillaResult = await fileZillaService.RestoreAsync(
+                    packageRoot, oldProfileRoot, newProfileRoot, destinationVolumeRoot);
+                if (fileZillaResult.Applied)
+                {
+                    lines.Add("FileZilla Server: configuração restaurada.");
+                }
+                else if (fileZillaResult.DiagnosticMessage is not null)
+                {
+                    lines.Add($"FileZilla Server: {fileZillaResult.DiagnosticMessage}");
+                }
+            }
+            catch (Exception ex)
+            {
+                lines.Add($"FileZilla Server: falha ao restaurar ({ex.Message}).");
+            }
+        }
+
+        try
+        {
+            var printerOutcomes = await printerDriverService.RestoreAsync(packageRoot);
+            if (printerOutcomes.Count > 0)
+            {
+                var succeeded = printerOutcomes.Count(outcome => outcome.Succeeded);
+                lines.Add($"Drivers de impressora: {succeeded}/{printerOutcomes.Count} instalado(s).");
+            }
+        }
+        catch (Exception ex)
+        {
+            lines.Add($"Drivers de impressora: falha ao restaurar ({ex.Message}).");
+        }
+
+        return lines.Count > 0 ? "\n\n" + string.Join("\n", lines) : string.Empty;
     }
 
     private static string FormatBytes(long bytes)
