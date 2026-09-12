@@ -8,7 +8,10 @@ using GRBKP.Core.Packages;
 
 namespace GRBKP.Core.Transfers;
 
-public sealed record StreamingBackupOptions(int ChannelCapacity = 8, int BufferSize = 1024 * 1024)
+public sealed record StreamingBackupOptions(
+    int ChannelCapacity = 8,
+    int BufferSize = 1024 * 1024,
+    int MaxConcurrentCopies = 4)
 {
     public int ValidatedChannelCapacity => ChannelCapacity > 0
         ? ChannelCapacity
@@ -17,6 +20,15 @@ public sealed record StreamingBackupOptions(int ChannelCapacity = 8, int BufferS
     public int ValidatedBufferSize => BufferSize > 0
         ? BufferSize
         : throw new ArgumentOutOfRangeException(nameof(BufferSize));
+
+    /// <summary>
+    /// Quantos arquivos são copiados ao mesmo tempo. Em SSD externo por USB, a latência por
+    /// arquivo (abrir, criar temporário, renomear, ajustar metadados) domina o tempo com arquivos
+    /// pequenos, e sobrepor algumas cópias esconde boa parte dela.
+    /// </summary>
+    public int ValidatedMaxConcurrentCopies => MaxConcurrentCopies > 0
+        ? MaxConcurrentCopies
+        : throw new ArgumentOutOfRangeException(nameof(MaxConcurrentCopies));
 }
 
 public sealed record BackupRequest(
@@ -118,9 +130,16 @@ public sealed class StreamingBackupEngine(
         var counters = writer.Checkpoint.Counters;
         var resumeAfterSequence = resume ? writer.Checkpoint.LastConfirmedSequence : 0;
         var failures = new List<OperationError>();
+        var window = new Queue<(TransferItem Item, Task<FileManifestEntry> Copy)>();
 
         try
         {
+            // Janela deslizante: até N cópias acontecem ao mesmo tempo, mas o COMMIT é sempre na
+            // ordem do produtor (sempre a cópia mais antiga da janela). Isso é obrigatório, não
+            // estético: a restauração percorre o manifesto pulando tudo com sequência menor ou
+            // igual ao último confirmado, então um manifesto fora de ordem faria a restauração
+            // pular arquivos — perda de dados silenciosa. Manter o commit sequencial também
+            // mantém um único escritor do manifesto/journal, sem necessidade de trava.
             await foreach (var item in channel.Reader
                 .ReadAllAsync(linkedCancellation.Token)
                 .ConfigureAwait(false))
@@ -130,41 +149,20 @@ public sealed class StreamingBackupEngine(
                     continue;
                 }
 
-                FileManifestEntry copied;
-                try
+                window.Enqueue((item, CopyOneAsync(request, item, linkedCancellation.Token)));
+                if (window.Count >= options.ValidatedMaxConcurrentCopies)
                 {
-                    copied = await CopyOneAsync(
-                        request,
-                        item,
-                        linkedCancellation.Token).ConfigureAwait(false);
+                    counters = await CommitOldestAsync(
+                        writer, window, counters, failures, linkedCancellation.Token)
+                        .ConfigureAwait(false);
                 }
-                catch (Exception exception) when (IsSingleFileFailure(exception))
-                {
-                    // Um arquivo ilegível não pode derrubar o backup inteiro: num perfil real
-                    // sempre há arquivos travados por outro processo (bases de e-mail/navegador
-                    // abertos) ou sem permissão de leitura (ACL de um SID de outra máquina).
-                    counters = counters with { FailedFiles = counters.FailedFiles + 1 };
-                    failures.Add(new OperationError(
-                        "file-copy-failed", exception.Message, item.PackageRelativePath));
-                    await writer.AppendFailedFileAsync(
-                        item.Sequence,
-                        item.ModuleId,
-                        item.PackageRelativePath,
-                        exception.Message,
-                        counters,
-                        linkedCancellation.Token).ConfigureAwait(false);
-                    continue;
-                }
+            }
 
-                counters = counters with
-                {
-                    CopiedFiles = counters.CopiedFiles + 1,
-                    CopiedBytes = checked(counters.CopiedBytes + copied.Length)
-                };
-                await writer.AppendCommittedFileAsync(
-                    copied,
-                    counters,
-                    linkedCancellation.Token).ConfigureAwait(false);
+            while (window.Count > 0)
+            {
+                counters = await CommitOldestAsync(
+                    writer, window, counters, failures, linkedCancellation.Token)
+                    .ConfigureAwait(false);
             }
 
             await producer.ConfigureAwait(false);
@@ -178,6 +176,7 @@ public sealed class StreamingBackupEngine(
         catch (StorageDisconnectedException exception)
         {
             linkedCancellation.Cancel();
+            await ObserveWindowAsync(request, window).ConfigureAwait(false);
             await ObserveProducerAfterCancellationAsync(producer).ConfigureAwait(false);
             try
             {
@@ -200,6 +199,7 @@ public sealed class StreamingBackupEngine(
             // Pausa (não falha definitiva): liberar espaço e repetir aproveita tudo que já foi
             // copiado, em vez de recomeçar o backup do zero.
             linkedCancellation.Cancel();
+            await ObserveWindowAsync(request, window).ConfigureAwait(false);
             await ObserveProducerAfterCancellationAsync(producer).ConfigureAwait(false);
             try
             {
@@ -224,9 +224,98 @@ public sealed class StreamingBackupEngine(
         catch
         {
             linkedCancellation.Cancel();
+            await ObserveWindowAsync(request, window).ConfigureAwait(false);
             await ObserveProducerAfterCancellationAsync(producer).ConfigureAwait(false);
 
             throw;
+        }
+    }
+
+    /// <summary>
+    /// Fecha a cópia mais antiga da janela: espera terminar e a registra no pacote. É aqui que a
+    /// ordem do manifesto é garantida, porque a janela é uma fila alimentada na ordem do produtor.
+    /// </summary>
+    private static async Task<DurableCounters> CommitOldestAsync(
+        BackupPackageWriter writer,
+        Queue<(TransferItem Item, Task<FileManifestEntry> Copy)> window,
+        DurableCounters counters,
+        List<OperationError> failures,
+        CancellationToken cancellationToken)
+    {
+        var (item, copyTask) = window.Dequeue();
+
+        FileManifestEntry copied;
+        try
+        {
+            copied = await copyTask.ConfigureAwait(false);
+        }
+        catch (Exception exception) when (IsSingleFileFailure(exception))
+        {
+            // Um arquivo ilegível não pode derrubar o backup inteiro: num perfil real sempre há
+            // arquivos travados por outro processo (bases de e-mail/navegador abertos) ou sem
+            // permissão de leitura (ACL de um SID de outra máquina).
+            var updated = counters with { FailedFiles = counters.FailedFiles + 1 };
+            failures.Add(new OperationError(
+                "file-copy-failed", exception.Message, item.PackageRelativePath));
+            await writer.AppendFailedFileAsync(
+                item.Sequence,
+                item.ModuleId,
+                item.PackageRelativePath,
+                exception.Message,
+                updated,
+                cancellationToken).ConfigureAwait(false);
+            return updated;
+        }
+
+        var advanced = counters with
+        {
+            CopiedFiles = counters.CopiedFiles + 1,
+            CopiedBytes = checked(counters.CopiedBytes + copied.Length)
+        };
+        await writer.AppendCommittedFileAsync(copied, advanced, cancellationToken)
+            .ConfigureAwait(false);
+        return advanced;
+    }
+
+    /// <summary>
+    /// Depois de abortar (mídia desconectada, disco cheio), fecha a janela de duas formas:
+    ///
+    /// 1. Observa as cópias em voo — senão suas exceções virariam exceções de Task não observada.
+    /// 2. APAGA do pacote as que chegaram a terminar mas nunca foram registradas no manifesto.
+    ///    Com cópia paralela isso acontece naturalmente: a cópia do arquivo 6 pode terminar antes
+    ///    de o arquivo 4 abortar a operação. Deixá-las ali criaria arquivos dentro do pacote que
+    ///    o manifesto não menciona — invisíveis para a restauração e para a conferência, mas
+    ///    ocupando espaço. No caso de disco cheio, apagá-las ainda libera espaço.
+    /// </summary>
+    private async Task ObserveWindowAsync(
+        BackupRequest request,
+        Queue<(TransferItem Item, Task<FileManifestEntry> Copy)> window)
+    {
+        while (window.Count > 0)
+        {
+            var (item, copyTask) = window.Dequeue();
+            try
+            {
+                await copyTask.ConfigureAwait(false);
+            }
+            catch
+            {
+                // A falha que abortou a operação é a evidência relevante.
+                continue;
+            }
+
+            try
+            {
+                await fileSystem.DeleteAsync(
+                    PackagePath.ResolveInside(request.PackageRoot, item.PackageRelativePath),
+                    recursive: false,
+                    CancellationToken.None).ConfigureAwait(false);
+            }
+            catch (Exception exception) when (
+                exception is IOException or UnauthorizedAccessException)
+            {
+                // A mídia pode ter sumido por completo; o manifesto continua sendo a verdade.
+            }
         }
     }
 

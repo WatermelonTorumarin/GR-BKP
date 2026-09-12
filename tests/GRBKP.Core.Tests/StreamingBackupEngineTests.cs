@@ -155,16 +155,30 @@ public sealed class StreamingBackupEngineTests
         Assert.Equal(PackageState.Complete, completed.State);
         Assert.Equal(fileCount, completed.Counters.CopiedFiles);
         Assert.Equal(totalBytes, completed.Counters.CopiedBytes);
-        Assert.Equal(fileCount, fileSystem.CommittedDataFiles);
+
+        // O que precisa continuar exato: o manifesto tem uma linha por arquivo, sem duplicar
+        // nada. É ele que a restauração e a conferência percorrem.
         Assert.Equal(fileCount, fileSystem.ReadText(Path.Combine(packageRoot, "files.jsonl"))
             .Split('\n', StringSplitOptions.RemoveEmptyEntries)
             .Length);
 
+        // Já o número de GRAVAÇÕES físicas pode passar de fileCount: com cópia paralela, no
+        // instante da desconexão havia outras cópias em voo que chegaram a terminar sem serem
+        // registradas (e foram apagadas do pacote no aborto). A retomada as refaz. O desperdício
+        // é limitado à janela de concorrência — é o preço de sobrepor cópias, e vale a pena.
+        Assert.InRange(
+            fileSystem.CommittedDataFiles,
+            fileCount,
+            fileCount + new StreamingBackupOptions().ValidatedMaxConcurrentCopies);
+
+        // Retomar um pacote JÁ concluído não pode copiar nem mais um arquivo: o contador precisa
+        // ficar exatamente onde estava antes desta chamada.
+        var writesBeforeRepeat = fileSystem.CommittedDataFiles;
         var repeated = await resumedEngine.ResumeAsync(
             request,
             GenerateItems(fileSystem, fileCount, totalBytes));
         Assert.Equal(PackageState.Complete, repeated.State);
-        Assert.Equal(fileCount, fileSystem.CommittedDataFiles);
+        Assert.Equal(writesBeforeRepeat, fileSystem.CommittedDataFiles);
     }
 
     [Fact]
