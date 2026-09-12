@@ -228,6 +228,15 @@ public sealed class WindowsFileSystemAdapter : IFileSystemAdapter
         cancellationToken.ThrowIfCancellationRequested();
         if (File.Exists(sourcePath))
         {
+            if (overwrite)
+            {
+                // O Windows recusa sobrescrever um arquivo somente-leitura, mesmo elevado. Isso
+                // acontece o tempo todo num perfil real (desktop.ini, documentos marcados como
+                // somente-leitura) e principalmente ao repetir/retomar uma restauração, já que a
+                // cópia anterior restaurou os atributos originais no destino.
+                ClearReadOnly(destinationPath);
+            }
+
             File.Move(sourcePath, destinationPath, overwrite);
             return ValueTask.CompletedTask;
         }
@@ -241,7 +250,7 @@ public sealed class WindowsFileSystemAdapter : IFileSystemAdapter
                     throw new IOException($"O destino já existe: {destinationPath}");
                 }
 
-                Directory.Delete(destinationPath, recursive: true);
+                DeleteDirectoryTree(destinationPath, recursive: true);
             }
 
             Directory.Move(sourcePath, destinationPath);
@@ -259,14 +268,57 @@ public sealed class WindowsFileSystemAdapter : IFileSystemAdapter
         cancellationToken.ThrowIfCancellationRequested();
         if (File.Exists(path))
         {
+            ClearReadOnly(path);
             File.Delete(path);
         }
         else if (Directory.Exists(path))
         {
-            Directory.Delete(path, recursive);
+            DeleteDirectoryTree(path, recursive);
         }
 
         return ValueTask.CompletedTask;
+    }
+
+    /// <summary>
+    /// Apaga uma árvore garantindo que arquivos somente-leitura não interrompam a remoção —
+    /// <c>Directory.Delete(recursive: true)</c> falha com UnauthorizedAccessException no primeiro
+    /// arquivo somente-leitura que encontra, o que derrubaria a limpeza da pasta de proteção
+    /// pré-migração depois de uma troca de árvore bem-sucedida.
+    /// </summary>
+    private static void DeleteDirectoryTree(string path, bool recursive)
+    {
+        if (recursive)
+        {
+            ClearReadOnlyRecursive(path);
+        }
+
+        Directory.Delete(path, recursive);
+    }
+
+    private static void ClearReadOnlyRecursive(string directory)
+    {
+        foreach (var file in EnumerateFilePathsRecursive(directory))
+        {
+            ClearReadOnly(file);
+        }
+    }
+
+    private static void ClearReadOnly(string path)
+    {
+        try
+        {
+            var attributes = File.GetAttributes(path);
+            if (attributes.HasFlag(FileAttributes.ReadOnly))
+            {
+                File.SetAttributes(path, attributes & ~FileAttributes.ReadOnly);
+            }
+        }
+        catch (Exception exception) when (
+            exception is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            // O caminho pode não existir (caso comum: sobrescrever onde ainda não há nada) ou
+            // estar inacessível; quem chamou trata a falha real da operação seguinte.
+        }
     }
 
     public ValueTask<FileSystemCapabilities> GetCapabilitiesAsync(

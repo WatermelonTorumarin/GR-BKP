@@ -117,6 +117,7 @@ public sealed class StreamingBackupEngine(
         var producer = ProduceAsync(items, channel.Writer, linkedCancellation.Token);
         var counters = writer.Checkpoint.Counters;
         var resumeAfterSequence = resume ? writer.Checkpoint.LastConfirmedSequence : 0;
+        var failures = new List<OperationError>();
 
         try
         {
@@ -129,10 +130,32 @@ public sealed class StreamingBackupEngine(
                     continue;
                 }
 
-                var copied = await CopyOneAsync(
-                    request,
-                    item,
-                    linkedCancellation.Token).ConfigureAwait(false);
+                FileManifestEntry copied;
+                try
+                {
+                    copied = await CopyOneAsync(
+                        request,
+                        item,
+                        linkedCancellation.Token).ConfigureAwait(false);
+                }
+                catch (Exception exception) when (IsSingleFileFailure(exception))
+                {
+                    // Um arquivo ilegível não pode derrubar o backup inteiro: num perfil real
+                    // sempre há arquivos travados por outro processo (bases de e-mail/navegador
+                    // abertos) ou sem permissão de leitura (ACL de um SID de outra máquina).
+                    counters = counters with { FailedFiles = counters.FailedFiles + 1 };
+                    failures.Add(new OperationError(
+                        "file-copy-failed", exception.Message, item.PackageRelativePath));
+                    await writer.AppendFailedFileAsync(
+                        item.Sequence,
+                        item.ModuleId,
+                        item.PackageRelativePath,
+                        exception.Message,
+                        counters,
+                        linkedCancellation.Token).ConfigureAwait(false);
+                    continue;
+                }
+
                 counters = counters with
                 {
                     CopiedFiles = counters.CopiedFiles + 1,
@@ -150,7 +173,7 @@ public sealed class StreamingBackupEngine(
                 request.OperationId,
                 PackageState.Complete,
                 counters,
-                []);
+                failures);
         }
         catch (StorageDisconnectedException exception)
         {
@@ -170,7 +193,7 @@ public sealed class StreamingBackupEngine(
                 request.OperationId,
                 PackageState.Paused,
                 counters,
-                [new OperationError("storage-disconnected", exception.Message)]);
+                [.. failures, new OperationError("storage-disconnected", exception.Message)]);
         }
         catch
         {
@@ -180,6 +203,15 @@ public sealed class StreamingBackupEngine(
             throw;
         }
     }
+
+    /// <summary>
+    /// Falha isolada de UM arquivo (ilegível, travado, sem permissão) — o backup continua e
+    /// contabiliza. Nunca inclui <see cref="StorageDisconnectedException"/> (que é IOException,
+    /// mas significa a mídia inteira ter sumido e precisa pausar a operação) nem cancelamento.
+    /// </summary>
+    private static bool IsSingleFileFailure(Exception exception) =>
+        exception is not StorageDisconnectedException &&
+        exception is IOException or UnauthorizedAccessException;
 
     private static async Task ObserveProducerAfterCancellationAsync(Task producer)
     {

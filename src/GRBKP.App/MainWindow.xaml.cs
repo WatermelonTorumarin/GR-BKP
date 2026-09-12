@@ -399,7 +399,8 @@ public partial class MainWindow : Window
                     $"{result.Result.Counters.CopiedFiles} arquivos • " +
                     $"{FormatBytes(result.Result.Counters.CopiedBytes)}\n\n" +
                     $"Os dados foram salvos em:\n{packageRoot}" +
-                    machineLevelSummary);
+                    machineLevelSummary +
+                    DescribeFileFailures(result.Result.Counters.FailedFiles, result.Result.Errors));
             }
             else
             {
@@ -588,6 +589,9 @@ public partial class MainWindow : Window
                     $"{FormatBytes(result.PersonalDataResult.Counters.CopiedBytes)}\n\n" +
                     $"Aplicativos: {moduleSummary}\n\n" +
                     $"Dados restaurados para:\n{restoreDestinationProfileRoot}" +
+                    DescribeFileFailures(
+                        result.PersonalDataResult.Counters.FailedFiles,
+                        result.PersonalDataResult.Errors) +
                     machineLevelSummary +
                     cleanupSummary +
                     "\n\nReinicie este computador quando for possível para concluir a migração.");
@@ -681,6 +685,31 @@ public partial class MainWindow : Window
         {
             return $"\n\nLimpeza corporativa: falha ({ex.Message}).";
         }
+    }
+
+    /// <summary>
+    /// Arquivos individuais que não puderam ser copiados (travados por outro processo, sem
+    /// permissão, corrompidos) não derrubam mais a operação inteira — mas o técnico PRECISA ver
+    /// que existiram, com exemplos de caminho, senão a resiliência viraria perda silenciosa.
+    /// </summary>
+    private static string DescribeFileFailures(
+        long failedFiles, IReadOnlyList<OperationError> errors)
+    {
+        if (failedFiles <= 0)
+        {
+            return string.Empty;
+        }
+
+        var examples = errors
+            .Where(error => !string.IsNullOrWhiteSpace(error.RelativePath))
+            .Take(5)
+            .Select(error => $"  • {error.RelativePath}");
+        var remaining = failedFiles > 5 ? $"\n  • … e mais {failedFiles - 5}" : string.Empty;
+
+        return $"\n\n⚠ {failedFiles} arquivo(s) não puderam ser copiados e ficaram de fora:\n" +
+            string.Join("\n", examples) + remaining +
+            "\nCausas comuns: arquivo aberto em outro programa, sem permissão de leitura, ou " +
+            "danificado. Confira esses itens manualmente.";
     }
 
     private static string FormatBytes(long bytes)

@@ -304,6 +304,39 @@ public sealed class BackupPackageWriter : IAsyncDisposable
             entry.PackageRelativePath), cancellationToken).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// Registra de forma durável que um arquivo NÃO pôde ser copiado, sem escrevê-lo em
+    /// files.jsonl — o manifesto precisa listar apenas o que realmente existe dentro do pacote,
+    /// senão a restauração tentaria copiar um arquivo ausente. A sequência avança mesmo assim
+    /// para que uma retomada não fique repetindo o mesmo arquivo problemático indefinidamente.
+    /// </summary>
+    public async Task AppendFailedFileAsync(
+        long sequence,
+        string moduleId,
+        string packageRelativePath,
+        string reason,
+        DurableCounters counters,
+        CancellationToken cancellationToken = default)
+    {
+        checkpoint = checkpoint with
+        {
+            LastConfirmedSequence = sequence,
+            LastConfirmedPath = packageRelativePath,
+            Counters = counters,
+            UpdatedAtUtc = clock.UtcNow
+        };
+        metadata = metadata with { Counters = counters };
+        await WriteOperationAsync(cancellationToken).ConfigureAwait(false);
+        await AppendJournalAsync(new JournalEntry(
+            clock.UtcNow,
+            checkpoint.OperationId,
+            "file-failed",
+            reason,
+            sequence,
+            moduleId,
+            packageRelativePath), cancellationToken).ConfigureAwait(false);
+    }
+
     public async Task AppendJournalAsync(
         JournalEntry entry,
         CancellationToken cancellationToken = default)

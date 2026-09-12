@@ -112,6 +112,7 @@ public sealed class StreamingRestoreEngine(
 
         var counters = checkpoint.Counters;
         var preserved = new List<PreservedItem>();
+        var failures = new List<OperationError>();
         try
         {
             await foreach (var entry in packageModule
@@ -168,11 +169,37 @@ public sealed class StreamingRestoreEngine(
                         : request.DestinationProfileRoot,
                     destinationPath,
                     cancellationToken).ConfigureAwait(false);
-                var copiedLength = await CopyOneAsync(
-                    request,
-                    entry,
-                    destinationPath,
-                    cancellationToken).ConfigureAwait(false);
+
+                long copiedLength;
+                try
+                {
+                    copiedLength = await CopyOneAsync(
+                        request,
+                        entry,
+                        destinationPath,
+                        cancellationToken).ConfigureAwait(false);
+                }
+                catch (Exception exception) when (IsSingleFileFailure(exception))
+                {
+                    // Mesmo raciocínio do backup: um arquivo travado no destino (antivírus,
+                    // aplicativo aberto) não pode abortar a restauração e deixar o perfil pela
+                    // metade. Registra, contabiliza e segue para o próximo.
+                    counters = counters with { FailedFiles = counters.FailedFiles + 1 };
+                    failures.Add(new OperationError(
+                        "file-restore-failed", exception.Message, entry.PackageRelativePath));
+                    checkpoint = checkpoint with
+                    {
+                        LastConfirmedSequence = entry.Sequence,
+                        LastConfirmedPath = entry.PackageRelativePath,
+                        Counters = counters
+                    };
+                    await checkpointStore.SaveAsync(
+                        request.OperationRoot,
+                        checkpoint,
+                        cancellationToken).ConfigureAwait(false);
+                    continue;
+                }
+
                 counters = counters with
                 {
                     CopiedFiles = counters.CopiedFiles + 1,
@@ -202,7 +229,7 @@ public sealed class StreamingRestoreEngine(
                 RestoreState.Complete,
                 counters,
                 preserved,
-                []);
+                failures);
             await reportModule.WriteRestoreReportAsync(
                 request.OperationRoot,
                 result,
@@ -226,7 +253,7 @@ public sealed class StreamingRestoreEngine(
                 RestoreState.Paused,
                 counters,
                 preserved,
-                [new OperationError("storage-disconnected", exception.Message)]);
+                [.. failures, new OperationError("storage-disconnected", exception.Message)]);
         }
         catch (InvalidPackagePathException exception)
         {
@@ -244,9 +271,23 @@ public sealed class StreamingRestoreEngine(
                 RestoreState.Failed,
                 counters,
                 preserved,
-                [new OperationError(exception.ErrorCode, exception.Message, exception.InvalidPath)]);
+                [.. failures, new OperationError(
+                    exception.ErrorCode, exception.Message, exception.InvalidPath)]);
         }
     }
+
+    /// <summary>
+    /// Falha isolada de UM arquivo no destino — a restauração continua e contabiliza. Nunca
+    /// inclui <see cref="StorageDisconnectedException"/> (mídia inteira ausente: precisa pausar)
+    /// nem <see cref="InvalidPackagePathException"/> (pacote malformado: precisa falhar).
+    /// </summary>
+    private static bool IsSingleFileFailure(Exception exception) =>
+        exception is not StorageDisconnectedException &&
+        exception is not InvalidPackagePathException &&
+        (exception is IOException or UnauthorizedAccessException ||
+            // Tamanho divergente do manifesto: aquele arquivo do pacote está corrompido (setor
+            // ruim no SSD, cópia truncada). Vale pular esse e restaurar todo o resto.
+            exception is InvalidDataException);
 
     private static string ResolveDestination(
         RestoreRequest request,
