@@ -56,6 +56,13 @@ public partial class MainWindow : Window
     private string? restoreDestinationProfileRoot;
     private PackageMetadata? restoreMetadata;
 
+    /// <summary>
+    /// Trava contra dois cliques: sem ela, clicar duas vezes em "Iniciar backup" dispara duas
+    /// operações concorrentes lendo a mesma origem e gravando em pacotes diferentes (a tela de
+    /// progresso esconde o botão, mas o segundo clique pode já estar na fila do Windows).
+    /// </summary>
+    private bool operationInProgress;
+
     public MainWindow()
     {
         InitializeComponent();
@@ -308,6 +315,11 @@ public partial class MainWindow : Window
 
     private async void StartBackup_Click(object sender, RoutedEventArgs e)
     {
+        if (operationInProgress)
+        {
+            return;
+        }
+
         var selected = profileOptions.FirstOrDefault(option => option.Control.IsChecked == true);
         if (selected.Profile is null || sourceVolumeRoot is null)
         {
@@ -335,6 +347,7 @@ public partial class MainWindow : Window
             $"BackUp[{personLabel}]",
             DateTime.Now.ToString("yyyy-MM-dd_HH-mm"));
 
+        operationInProgress = true;
         ShowProgress("Fazendo backup…", $"Copiando dados de {profile.Name} para {packageRoot}");
         try
         {
@@ -425,6 +438,10 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             ShowResult(false, "Falha no backup", ex.Message);
+        }
+        finally
+        {
+            operationInProgress = false;
         }
     }
 
@@ -596,6 +613,11 @@ public partial class MainWindow : Window
 
     private async void ConfirmRestore_Click(object sender, RoutedEventArgs e)
     {
+        if (operationInProgress)
+        {
+            return;
+        }
+
         if (restorePackageRoot is null || restoreDestinationProfileRoot is null)
         {
             ShowPage(RestoreSourcePage);
@@ -612,6 +634,7 @@ public partial class MainWindow : Window
             Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
             "GRBKP", "operations", operationId.ToString("N"));
 
+        operationInProgress = true;
         ShowProgress("Restaurando…", $"Restaurando dados para {restoreDestinationProfileRoot}");
         try
         {
@@ -668,6 +691,10 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             ShowResult(false, "Falha na restauração", ex.Message);
+        }
+        finally
+        {
+            operationInProgress = false;
         }
     }
 
