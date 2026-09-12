@@ -28,19 +28,27 @@ public sealed class OfflineRegistryHiveReader : IOfflineRegistryHiveReader
         }
 
         var results = new List<OfflineRegistrySubKey>();
-        foreach (var subKey in key.SubKeys)
+        foreach (var shallowSubKey in key.SubKeys)
         {
             cancellationToken.ThrowIfCancellationRequested();
+
+            // "OnDemand" é literal: as subchaves devolvidas por key.SubKeys vêm RASAS — só com o
+            // nome, sempre com Values vazio. Para ler os valores é obrigatório buscar cada chave
+            // pelo caminho completo. Sem isto, todo valor pedido voltava nulo e a resolução de
+            // SID (que lê ProfileImagePath de cada perfil em ProfileList) nunca encontrava nada.
+            var fullKey = valueNames.Count > 0
+                ? hive.GetKey($@"{keyPath}\{shallowSubKey.KeyName}")
+                : null;
 
             var values = new Dictionary<string, string?>();
             foreach (var valueName in valueNames)
             {
-                var value = subKey.Values.FirstOrDefault(v =>
-                    string.Equals(v.ValueName, valueName, StringComparison.OrdinalIgnoreCase));
+                var value = fullKey?.Values.FirstOrDefault(candidate =>
+                    string.Equals(candidate.ValueName, valueName, StringComparison.OrdinalIgnoreCase));
                 values[valueName] = value?.ValueData;
             }
 
-            results.Add(new OfflineRegistrySubKey(subKey.KeyName, values));
+            results.Add(new OfflineRegistrySubKey(shallowSubKey.KeyName, values));
         }
 
         return Task.FromResult<IReadOnlyList<OfflineRegistrySubKey>>(results);

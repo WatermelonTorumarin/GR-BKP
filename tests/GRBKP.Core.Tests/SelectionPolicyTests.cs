@@ -51,6 +51,51 @@ public sealed class SelectionPolicyTests
     }
 
     [Fact]
+    public async Task AppDataSweep_SkipsEphemeralFolders_ThatOnlyWasteSpaceInThePackage()
+    {
+        // Medido num perfil real: AppData\Local tinha 16,6 GB, dos quais centenas de MB eram
+        // apenas Temp, dumps de falha e caches de miniatura — conteúdo que o Windows recria
+        // sozinho, mas que hoje entraria inteiro no pacote e no SSD de backup.
+        var fileSystem = new SelectionFileSystemFake();
+        var profileRoot = @"E:\Users\Ana";
+        var appDataLocal = Path.Combine(profileRoot, "AppData", "Local");
+        fileSystem.AddRegularFile(appDataLocal, @"Temp\instalador-qualquer.tmp");
+        fileSystem.AddRegularFile(appDataLocal, @"CrashDumps\app.12345.dmp");
+        fileSystem.AddRegularFile(appDataLocal, @"Microsoft\Windows\Explorer\thumbcache_256.db");
+        fileSystem.AddRegularFile(appDataLocal, @"Microsoft\Windows\INetCache\IE\index.dat");
+        fileSystem.AddRegularFile(appDataLocal, @"Microsoft\Windows\WebCache\WebCacheV01.dat");
+        var sut = new SelectionPolicyModule(fileSystem);
+
+        var run = sut.Select(new ProfileSelection("Ana", profileRoot, null));
+        var items = await CollectAsync(run.Items);
+
+        Assert.Empty(items);
+    }
+
+    [Fact]
+    public async Task AppDataSweep_StillCapturesRealApplicationData_NextToTheEphemeralFolders()
+    {
+        // Trava de segurança da exclusão acima: só o que é descartável pode sair. Um programa
+        // com "Temp" no meio do próprio nome, ou dados dentro de uma pasta de aplicativo, ficam.
+        var fileSystem = new SelectionFileSystemFake();
+        var profileRoot = @"E:\Users\Ana";
+        var appDataLocal = Path.Combine(profileRoot, "AppData", "Local");
+        fileSystem.AddRegularFile(appDataLocal, @"SistemaDaConcessionaria\config.xml");
+        fileSystem.AddRegularFile(appDataLocal, @"TempoReal\banco.db");
+        fileSystem.AddRegularFile(appDataLocal, @"Microsoft\Windows\Temas\meu-tema.theme");
+        var sut = new SelectionPolicyModule(fileSystem);
+
+        var run = sut.Select(new ProfileSelection("Ana", profileRoot, null));
+        var items = await CollectAsync(run.Items);
+
+        Assert.Equal(3, items.Count);
+        Assert.Contains(items, item => item.PackageRelativePath.EndsWith(
+            "AppData/Local/SistemaDaConcessionaria/config.xml", StringComparison.Ordinal));
+        Assert.Contains(items, item => item.PackageRelativePath.EndsWith(
+            "AppData/Local/TempoReal/banco.db", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public async Task T04_PublicAndProfileFilesWithSameName_KeepDistinctNamespaces()
     {
         var fileSystem = new SelectionFileSystemFake();

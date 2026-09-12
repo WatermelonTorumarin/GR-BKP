@@ -114,7 +114,8 @@ public sealed class SelectionPolicyModule(
 
                 var relativeFromProfile =
                     $"AppData/{appDataPart}/{Path.GetRelativePath(root, entry.FullPath).Replace('\\', '/')}";
-                if (IsWithinExcludedAppDataPath(relativeFromProfile))
+                if (IsWithinExcludedAppDataPath(relativeFromProfile) ||
+                    IsEphemeralAppDataPath(relativeFromProfile))
                 {
                     continue;
                 }
@@ -233,6 +234,39 @@ public sealed class SelectionPolicyModule(
         {
             if (relativeFromProfile.Equals(excluded, StringComparison.OrdinalIgnoreCase) ||
                 relativeFromProfile.StartsWith(excluded + "/", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Pastas de AppData cujo conteúdo o próprio Windows/aplicativo recria sozinho: copiá-las só
+    /// aumenta o tempo do backup e ocupa o SSD (medido num perfil real: centenas de MB entre
+    /// Temp, dumps de falha e caches de miniatura). A lista é deliberadamente CURTA e explícita —
+    /// só entra aqui o que é inequivocamente descartável. Nada de regra genérica por nome (como
+    /// excluir qualquer pasta chamada "Cache"), porque aplicativos guardam dado real em pastas
+    /// com esses nomes e perder dado do usuário é muito pior do que copiar lixo.
+    /// </summary>
+    private static readonly string[] EphemeralAppDataPaths =
+    [
+        "AppData/Local/Temp",
+        "AppData/Local/CrashDumps",
+        "AppData/Local/Microsoft/Windows/Explorer",
+        "AppData/Local/Microsoft/Windows/INetCache",
+        "AppData/Local/Microsoft/Windows/WebCache",
+        "AppData/Local/Microsoft/Windows/Temporary Internet Files",
+        "AppData/Local/Microsoft/Terminal Server Client/Cache",
+        "AppData/Local/Microsoft/Windows/WER"
+    ];
+
+    private static bool IsEphemeralAppDataPath(string relativeFromProfile)
+    {
+        foreach (var ephemeral in EphemeralAppDataPaths)
+        {
+            if (relativeFromProfile.StartsWith(ephemeral + "/", StringComparison.OrdinalIgnoreCase))
             {
                 return true;
             }
