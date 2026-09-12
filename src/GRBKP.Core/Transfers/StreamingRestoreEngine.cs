@@ -44,6 +44,19 @@ public sealed class StreamingRestoreEngine(
     private readonly IReadOnlySet<string> modulesHandledSeparately =
         modulesHandledSeparately ?? new HashSet<string>();
 
+    /// <summary>
+    /// Mesmo gargalo medido no backup: gravar o checkpoint a cada arquivo custa uma serialização
+    /// + arquivo temporário + renomeação por arquivo do usuário. Grava em lotes; numa queda, a
+    /// retomada refaz no máximo estes N arquivos. Estado final (concluído, pausado, falho) é
+    /// sempre gravado na hora.
+    /// </summary>
+    private const int CheckpointEveryFiles = 64;
+
+    private static readonly TimeSpan CheckpointEveryInterval = TimeSpan.FromSeconds(2);
+
+    private int filesSinceCheckpoint;
+    private DateTimeOffset lastCheckpointAtUtc = DateTimeOffset.MinValue;
+
     public Task<RestoreOperationResult> RunAsync(
         RestoreRequest request,
         CancellationToken cancellationToken = default) =>
@@ -64,6 +77,11 @@ public sealed class StreamingRestoreEngine(
         {
             throw new ArgumentOutOfRangeException(nameof(bufferSize));
         }
+
+        // O motor é reutilizado entre operações (o app o constrói uma vez): cada operação começa
+        // com o lote de checkpoint zerado, para o comportamento não depender da operação anterior.
+        filesSinceCheckpoint = 0;
+        lastCheckpointAtUtc = DateTimeOffset.MinValue;
 
         var package = await packageModule.ReadMetadataAsync(
             request.PackageRoot,
@@ -133,7 +151,7 @@ public sealed class StreamingRestoreEngine(
                         LastConfirmedPath = entry.PackageRelativePath,
                         Counters = counters
                     };
-                    await checkpointStore.SaveAsync(
+                    await SaveCheckpointIfDueAsync(
                         request.OperationRoot,
                         checkpoint,
                         cancellationToken).ConfigureAwait(false);
@@ -155,7 +173,7 @@ public sealed class StreamingRestoreEngine(
                         LastConfirmedPath = entry.PackageRelativePath,
                         Counters = counters
                     };
-                    await checkpointStore.SaveAsync(
+                    await SaveCheckpointIfDueAsync(
                         request.OperationRoot,
                         checkpoint,
                         cancellationToken).ConfigureAwait(false);
@@ -193,7 +211,7 @@ public sealed class StreamingRestoreEngine(
                         LastConfirmedPath = entry.PackageRelativePath,
                         Counters = counters
                     };
-                    await checkpointStore.SaveAsync(
+                    await SaveCheckpointIfDueAsync(
                         request.OperationRoot,
                         checkpoint,
                         cancellationToken).ConfigureAwait(false);
@@ -211,7 +229,7 @@ public sealed class StreamingRestoreEngine(
                     LastConfirmedPath = entry.PackageRelativePath,
                     Counters = counters
                 };
-                await checkpointStore.SaveAsync(
+                await SaveCheckpointIfDueAsync(
                     request.OperationRoot,
                     checkpoint,
                     cancellationToken).ConfigureAwait(false);
@@ -288,6 +306,24 @@ public sealed class StreamingRestoreEngine(
             // Tamanho divergente do manifesto: aquele arquivo do pacote está corrompido (setor
             // ruim no SSD, cópia truncada). Vale pular esse e restaurar todo o resto.
             exception is InvalidDataException);
+
+    private async Task SaveCheckpointIfDueAsync(
+        string operationRoot,
+        OperationCheckpoint checkpoint,
+        CancellationToken cancellationToken)
+    {
+        filesSinceCheckpoint++;
+        if (filesSinceCheckpoint < CheckpointEveryFiles &&
+            clock.UtcNow - lastCheckpointAtUtc < CheckpointEveryInterval)
+        {
+            return;
+        }
+
+        await checkpointStore.SaveAsync(operationRoot, checkpoint, cancellationToken)
+            .ConfigureAwait(false);
+        filesSinceCheckpoint = 0;
+        lastCheckpointAtUtc = clock.UtcNow;
+    }
 
     private static string ResolveDestination(
         RestoreRequest request,
