@@ -195,6 +195,32 @@ public sealed class StreamingBackupEngine(
                 counters,
                 [.. failures, new OperationError("storage-disconnected", exception.Message)]);
         }
+        catch (Exception exception) when (FileSystemFailures.IsDestinationDiskFull(exception))
+        {
+            // Pausa (não falha definitiva): liberar espaço e repetir aproveita tudo que já foi
+            // copiado, em vez de recomeçar o backup do zero.
+            linkedCancellation.Cancel();
+            await ObserveProducerAfterCancellationAsync(producer).ConfigureAwait(false);
+            try
+            {
+                await writer.TransitionAsync(PackageState.Paused, CancellationToken.None)
+                    .ConfigureAwait(false);
+            }
+            catch (Exception transitionFailure) when (
+                transitionFailure is IOException or UnauthorizedAccessException)
+            {
+                // Sem espaço nem para o próprio checkpoint; o último durável prevalece.
+            }
+
+            return new BackupOperationResult(
+                request.OperationId,
+                PackageState.Paused,
+                counters,
+                [.. failures, new OperationError(
+                    "destination-disk-full",
+                    "O disco de destino ficou sem espaço. Libere espaço e repita o backup: " +
+                    "os arquivos já copiados serão aproveitados.")]);
+        }
         catch
         {
             linkedCancellation.Cancel();
@@ -211,6 +237,7 @@ public sealed class StreamingBackupEngine(
     /// </summary>
     private static bool IsSingleFileFailure(Exception exception) =>
         exception is not StorageDisconnectedException &&
+        !FileSystemFailures.IsDestinationDiskFull(exception) &&
         exception is IOException or UnauthorizedAccessException;
 
     private static async Task ObserveProducerAfterCancellationAsync(Task producer)
@@ -354,3 +381,19 @@ public sealed class StreamingBackupEngine(
 
 public sealed class StorageDisconnectedException(string message, Exception? innerException = null)
     : IOException(message, innerException);
+
+/// <summary>
+/// Distingue falhas que valem para a operação INTEIRA das que valem para um arquivo só. Disco
+/// cheio é o caso crítico: sem essa distinção, a resiliência por arquivo transformaria um SSD de
+/// destino lotado em "backup concluído, com 50 mil arquivos não copiados" — verdade técnica,
+/// desastre prático, porque todo arquivo seguinte também falharia pelo mesmo motivo.
+/// </summary>
+public static class FileSystemFailures
+{
+    private const int ErrorDiskFull = unchecked((int)0x80070070);
+    private const int ErrorHandleDiskFull = unchecked((int)0x80070027);
+
+    public static bool IsDestinationDiskFull(Exception exception) =>
+        exception is IOException &&
+        (exception.HResult == ErrorDiskFull || exception.HResult == ErrorHandleDiskFull);
+}

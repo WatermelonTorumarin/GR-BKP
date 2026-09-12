@@ -416,7 +416,9 @@ public partial class MainWindow : Window
                     : "sem detalhes adicionais";
                 ShowResult(
                     false,
-                    $"Backup {result.Result.State.ToString().ToLowerInvariant()}",
+                    result.Result.State == PackageState.Paused
+                        ? "Backup interrompido"
+                        : "Backup não concluído",
                     $"O backup não foi concluído. {errorSummary}");
             }
         }
@@ -649,11 +651,18 @@ public partial class MainWindow : Window
                 var failedModules = result.ModuleOutcome.Results
                     .Where(r => r.Outcome == ModuleOutcome.Failed)
                     .Select(r => r.ModuleId);
-                var detail = result.OverallState == RestoreState.Failed && failedModules.Any()
+                var engineErrors = result.PersonalDataResult.Errors.Count > 0
+                    ? "\n\n" + string.Join(
+                        "\n", result.PersonalDataResult.Errors.Select(error => error.Message).Distinct())
+                    : string.Empty;
+                var detail = (result.OverallState == RestoreState.Failed && failedModules.Any()
                     ? $"Falha ao restaurar: {string.Join(", ", failedModules)}. " +
                       "Os dados anteriores desses aplicativos foram preservados no destino."
-                    : "A restauração não foi concluída.";
-                ShowResult(false, $"Restauração {result.OverallState.ToString().ToLowerInvariant()}", detail);
+                    : "A restauração não foi concluída.") + engineErrors;
+                var title = result.OverallState == RestoreState.Paused
+                    ? "Restauração interrompida"
+                    : "Restauração não concluída";
+                ShowResult(false, title, detail);
             }
         }
         catch (Exception ex)

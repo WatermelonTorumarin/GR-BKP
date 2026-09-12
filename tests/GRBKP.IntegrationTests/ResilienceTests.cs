@@ -140,6 +140,32 @@ public sealed class ResilienceTests
         Assert.Equal("storage-disconnected", Assert.Single(result.Errors).Code);
     }
 
+    [Fact]
+    public async Task BackupRunAsync_AbortsImmediately_WhenTheDestinationDiskIsFull()
+    {
+        // Disco cheio NÃO é "um arquivo com problema": todo arquivo seguinte também falharia.
+        // Sem esta distinção, a resiliência por arquivo transformaria um SSD lotado em "backup
+        // concluído, 50.000 arquivos não copiados" — tecnicamente verdade, praticamente péssimo.
+        using var fixture = new TemporaryDirectory();
+        var fileSystem = new DiskFullFileSystemAdapter(new WindowsFileSystemAdapter());
+        var engine = BuildBackupEngine(fileSystem);
+
+        var first = fixture.WriteFile("origem/um.txt", "UM");
+        var second = fixture.WriteFile("origem/dois.txt", "DOIS");
+        var third = fixture.WriteFile("origem/tres.txt", "TRES");
+        fileSystem.FailWritesAfter = 1;
+
+        var result = await engine.RunAsync(
+            new BackupRequest(Guid.NewGuid(), fixture.PathFor("pacote"), BuildMetadata()),
+            PersonalFiles([("um.txt", first), ("dois.txt", second), ("tres.txt", third)]));
+
+        Assert.NotEqual(PackageState.Complete, result.State);
+        Assert.Contains(result.Errors, error => error.Code == "destination-disk-full");
+        // Parou no primeiro sinal de disco cheio, em vez de insistir nos arquivos restantes.
+        Assert.Equal(1, result.Counters.CopiedFiles);
+        Assert.Equal(0, result.Counters.FailedFiles);
+    }
+
     // ---- Motor de restauracao ----
 
     [Fact]
@@ -331,6 +357,67 @@ public sealed class ResilienceTests
         public ValueTask<Stream> OpenWriteAsync(
             string path, FileWriteMode mode, CancellationToken cancellationToken = default) =>
             inner.OpenWriteAsync(path, mode, cancellationToken);
+
+        public ValueTask CreateDirectoryAsync(string path, CancellationToken cancellationToken = default) =>
+            inner.CreateDirectoryAsync(path, cancellationToken);
+
+        public ValueTask<PathEntryInfo?> GetInfoAsync(
+            string path, CancellationToken cancellationToken = default) =>
+            inner.GetInfoAsync(path, cancellationToken);
+
+        public ValueTask MoveAsync(
+            string sourcePath, string destinationPath, bool overwrite,
+            CancellationToken cancellationToken = default) =>
+            inner.MoveAsync(sourcePath, destinationPath, overwrite, cancellationToken);
+
+        public ValueTask DeleteAsync(
+            string path, bool recursive, CancellationToken cancellationToken = default) =>
+            inner.DeleteAsync(path, recursive, cancellationToken);
+
+        public ValueTask<FileSystemCapabilities> GetCapabilitiesAsync(
+            string path, CancellationToken cancellationToken = default) =>
+            inner.GetCapabilitiesAsync(path, cancellationToken);
+
+        public ValueTask SetMetadataAsync(
+            string path, FileMetadata metadata, CancellationToken cancellationToken = default) =>
+            inner.SetMetadataAsync(path, metadata, cancellationToken);
+    }
+
+    /// <summary>
+    /// Simula o SSD de destino lotar no meio do backup: o Windows devolve IOException com
+    /// ERROR_DISK_FULL (0x80070070) em toda gravação a partir daí.
+    /// </summary>
+    private sealed class DiskFullFileSystemAdapter(IFileSystemAdapter inner) : IFileSystemAdapter
+    {
+        private int writesSoFar;
+
+        public int FailWritesAfter { get; set; } = int.MaxValue;
+
+        public ValueTask<Stream> OpenWriteAsync(
+            string path, FileWriteMode mode, CancellationToken cancellationToken = default)
+        {
+            // Só conta gravações de arquivo do usuário (as do pacote em si: manifesto, journal,
+            // checkpoint) continuam funcionando, como aconteceria com um disco quase cheio.
+            if (path.Contains("data", StringComparison.Ordinal) && ++writesSoFar > FailWritesAfter)
+            {
+                throw new IOException(
+                    "Não há espaço suficiente no disco.", unchecked((int)0x80070070));
+            }
+
+            return inner.OpenWriteAsync(path, mode, cancellationToken);
+        }
+
+        public IAsyncEnumerable<FileSystemEntry> EnumerateFilesAsync(
+            string rootPath, CancellationToken cancellationToken = default) =>
+            inner.EnumerateFilesAsync(rootPath, cancellationToken);
+
+        public IAsyncEnumerable<PathEntryInfo> EnumerateDirectoriesAsync(
+            string rootPath, CancellationToken cancellationToken = default) =>
+            inner.EnumerateDirectoriesAsync(rootPath, cancellationToken);
+
+        public ValueTask<Stream> OpenReadAsync(
+            string path, CancellationToken cancellationToken = default) =>
+            inner.OpenReadAsync(path, cancellationToken);
 
         public ValueTask CreateDirectoryAsync(string path, CancellationToken cancellationToken = default) =>
             inner.CreateDirectoryAsync(path, cancellationToken);

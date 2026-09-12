@@ -273,6 +273,28 @@ public sealed class StreamingRestoreEngine(
                 preserved,
                 [.. failures, new OperationError("storage-disconnected", exception.Message)]);
         }
+        catch (Exception exception) when (FileSystemFailures.IsDestinationDiskFull(exception))
+        {
+            checkpoint = checkpoint with
+            {
+                State = RestoreState.Paused.ToString(),
+                ResumeState = RestoreState.RestoringUserData.ToString(),
+                Counters = counters
+            };
+            await checkpointStore.SaveAsync(
+                request.OperationRoot,
+                checkpoint,
+                CancellationToken.None).ConfigureAwait(false);
+            return new RestoreOperationResult(
+                request.OperationId,
+                RestoreState.Paused,
+                counters,
+                preserved,
+                [.. failures, new OperationError(
+                    "destination-disk-full",
+                    "O disco de destino ficou sem espaço durante a restauração. Libere espaço e " +
+                    "repita: os arquivos já restaurados serão aproveitados.")]);
+        }
         catch (InvalidPackagePathException exception)
         {
             checkpoint = checkpoint with
@@ -302,6 +324,7 @@ public sealed class StreamingRestoreEngine(
     private static bool IsSingleFileFailure(Exception exception) =>
         exception is not StorageDisconnectedException &&
         exception is not InvalidPackagePathException &&
+        !FileSystemFailures.IsDestinationDiskFull(exception) &&
         (exception is IOException or UnauthorizedAccessException ||
             // Tamanho divergente do manifesto: aquele arquivo do pacote está corrompido (setor
             // ruim no SSD, cópia truncada). Vale pular esse e restaurar todo o resto.
