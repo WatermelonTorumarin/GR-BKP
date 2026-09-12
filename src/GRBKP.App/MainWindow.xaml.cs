@@ -39,6 +39,7 @@ public partial class MainWindow : Window
     private readonly IClock clock = new SystemClock();
     private readonly WindowsProfileDiscovery profileDiscovery;
     private readonly OfflineProfileSidResolver sourceSidResolver;
+    private readonly ProfileFolderRedirectionDetector redirectionDetector;
     private readonly LiveProfileSidReader destinationSidReader = new();
     private readonly BackupPackageModule packageModule;
     private readonly StreamingBackupEngine backupEngine;
@@ -60,6 +61,7 @@ public partial class MainWindow : Window
         InitializeComponent();
         profileDiscovery = new WindowsProfileDiscovery(fileSystem);
         sourceSidResolver = new OfflineProfileSidResolver(new OfflineRegistryHiveReader());
+        redirectionDetector = new ProfileFolderRedirectionDetector(new OfflineRegistryHiveReader());
         packageModule = new BackupPackageModule(fileSystem, clock);
         backupEngine = new StreamingBackupEngine(fileSystem, packageModule, clock);
         modules = MigrationModuleCatalog.CreateAll(fileSystem, processAdapter);
@@ -323,6 +325,11 @@ public partial class MainWindow : Window
         }
 
         var profile = selected.Profile;
+        if (!await ConfirmRedirectedFoldersAsync(profile))
+        {
+            return;
+        }
+
         var packageRoot = Path.Combine(
             destinationBase,
             $"BackUp[{personLabel}]",
@@ -417,6 +424,47 @@ public partial class MainWindow : Window
         {
             ShowResult(false, "Falha no backup", ex.Message);
         }
+    }
+
+    /// <summary>
+    /// Antes de copiar qualquer coisa, checa no registro do próprio perfil se Documentos/Área de
+    /// Trabalho/Downloads/Imagens apontam para fora do perfil (Backup de pastas do OneDrive,
+    /// redirecionamento corporativo para a rede). Nesse caso a varredura padrão acharia a pasta
+    /// vazia e o backup terminaria "com sucesso" sem os arquivos do funcionário. O técnico precisa
+    /// decidir isso de olhos abertos, não descobrir depois.
+    /// </summary>
+    private async Task<bool> ConfirmRedirectedFoldersAsync(DiscoveredProfile profile)
+    {
+        IReadOnlyList<RedirectedFolder> redirected;
+        try
+        {
+            redirected = await redirectionDetector.DetectAsync(profile.ProfileRoot);
+        }
+        catch (Exception)
+        {
+            // A detecção é um alerta extra, nunca um bloqueio: se falhar, o backup segue.
+            return true;
+        }
+
+        if (redirected.Count == 0)
+        {
+            return true;
+        }
+
+        var list = string.Join(
+            "\n", redirected.Select(folder => $"  • {folder.FolderName} → {folder.ConfiguredPath}"));
+        var answer = MessageBox.Show(
+            this,
+            $"As pastas abaixo deste perfil NÃO ficam no lugar padrão:\n\n{list}\n\n" +
+            "O backup copia apenas os caminhos padrão, então o conteúdo dessas pastas " +
+            "NÃO será incluído. Isso normalmente acontece quando o OneDrive está fazendo " +
+            "backup das pastas, ou quando há redirecionamento para a rede.\n\n" +
+            "Continuar assim mesmo? (Escolha Não para tratar essas pastas manualmente antes.)",
+            "Atenção: pastas fora do lugar padrão",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Warning);
+
+        return answer == MessageBoxResult.Yes;
     }
 
     private static async IAsyncEnumerable<TransferItem> BuildBackupItemsAsync(
