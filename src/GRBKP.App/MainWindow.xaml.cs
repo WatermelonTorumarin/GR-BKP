@@ -56,6 +56,7 @@ public partial class MainWindow : Window
     private string? restorePackageRoot;
     private string? restoreDestinationProfileRoot;
     private PackageMetadata? restoreMetadata;
+    private readonly List<(string ModuleId, CheckBox Control)> restoreModuleOptions = [];
 
     /// <summary>
     /// Trava contra dois cliques: sem ela, clicar duas vezes em "Iniciar backup" dispara duas
@@ -1096,6 +1097,7 @@ public partial class MainWindow : Window
             restorePackageRoot = packageRoot;
             restoreDestinationProfileRoot = destinationRoot;
             restoreMetadata = metadata;
+            PopulateRestoreModuleChoices(metadata);
             RestoreConfirmationDetails.Text =
                 $"Origem: {packageRoot}\n" +
                 $"Perfil: {metadata.Profile.Name}\n" +
@@ -1130,6 +1132,42 @@ public partial class MainWindow : Window
             .Message;
     }
 
+    /// <summary>
+    /// Uma caixa de marcação por aplicativo presente no pacote, todas ligadas por padrão. Permite
+    /// refazer só o que faltou numa restauração anterior, sem repetir os arquivos pessoais.
+    /// </summary>
+    private void PopulateRestoreModuleChoices(PackageMetadata metadata)
+    {
+        RestoreModulesPanel.Children.Clear();
+        restoreModuleOptions.Clear();
+        RestorePersonalFilesCheckBox.IsChecked = true;
+
+        foreach (var moduleId in metadata.Modules)
+        {
+            var caixa = new CheckBox
+            {
+                Content = FriendlyModuleName(moduleId),
+                IsChecked = true,
+                Foreground = System.Windows.Media.Brushes.White,
+                FontSize = 14,
+                Margin = new Thickness(0, 2, 18, 2)
+            };
+            RestoreModulesPanel.Children.Add(caixa);
+            restoreModuleOptions.Add((moduleId, caixa));
+        }
+    }
+
+    private static string FriendlyModuleName(string moduleId) => moduleId switch
+    {
+        "thunderbird" => "Thunderbird",
+        "firefox" => "Firefox",
+        "chrome" => "Google Chrome",
+        "edge" => "Microsoft Edge",
+        "office" => "Office / Outlook",
+        "adobe-acrobat" => "Adobe Acrobat Reader",
+        _ => moduleId
+    };
+
     private void RestoreConfirmBack_Click(object sender, RoutedEventArgs e) => ShowPage(RestoreSourcePage);
 
     private async void ConfirmRestore_Click(object sender, RoutedEventArgs e)
@@ -1146,6 +1184,21 @@ public partial class MainWindow : Window
         }
 
         var runCorporateCleanup = CorporateCleanupCheckBox.IsChecked == true;
+        var restorePersonalFiles = RestorePersonalFilesCheckBox.IsChecked == true;
+        var chosenModules = restoreModuleOptions
+            .Where(option => option.Control.IsChecked == true)
+            .Select(option => option.ModuleId)
+            .ToList();
+
+        if (!restorePersonalFiles && chosenModules.Count == 0)
+        {
+            MessageBox.Show(
+                this,
+                "Escolha pelo menos uma coisa para restaurar: os arquivos pessoais ou algum aplicativo.",
+                "GR BKP");
+            return;
+        }
+
         var operationId = Guid.NewGuid();
         var publicRoot = Path.Combine(
             Path.GetDirectoryName(restoreDestinationProfileRoot.TrimEnd(
@@ -1157,6 +1210,16 @@ public partial class MainWindow : Window
 
         operationInProgress = true;
         progressContext = $"destino {Path.GetFileName(restoreDestinationProfileRoot)}";
+
+        if (!restorePersonalFiles)
+        {
+            await RestoreOnlyApplicationsAsync(
+                operationId, restorePackageRoot, restoreDestinationProfileRoot,
+                operationRoot, chosenModules, runCorporateCleanup);
+            operationInProgress = false;
+            return;
+        }
+
         ShowProgress("Restaurando…", $"Restaurando para {restoreDestinationProfileRoot}");
 
         // Na restauração o total já é conhecido: está gravado no próprio pacote.
@@ -1169,7 +1232,8 @@ public partial class MainWindow : Window
                 new RestoreRequest(
                     operationId, restorePackageRoot, restoreDestinationProfileRoot,
                     publicRoot, operationRoot),
-                new Progress<TransferProgress>(value => ReportProgress(value)));
+                new Progress<TransferProgress>(value => ReportProgress(value)),
+                chosenModules);
 
             if (result.OverallState == RestoreState.Complete)
             {
@@ -1283,6 +1347,85 @@ public partial class MainWindow : Window
         finally
         {
             operationInProgress = false;
+        }
+    }
+
+    /// <summary>
+    /// Restaura SÓ os aplicativos escolhidos, sem repetir os arquivos pessoais. Existe por um
+    /// caso real: numa restauração de 50 GB o Thunderbird falhou, e como os aplicativos eram
+    /// restaurados em sequência parando no primeiro erro, Chrome e Edge nunca chegaram a ser
+    /// tentados. Sem esta opção, recuperá-los exigiria repetir a operação inteira.
+    /// </summary>
+    private async Task RestoreOnlyApplicationsAsync(
+        Guid operationId,
+        string packageRoot,
+        string destinationProfileRoot,
+        string operationRoot,
+        IReadOnlyList<string> moduleIds,
+        bool runCorporateCleanup)
+    {
+        var nomes = string.Join(", ", moduleIds.Select(FriendlyModuleName));
+        ShowProgress("Restaurando aplicativos…", nomes);
+        ProgressAmountText.Text = "Trocando os dados de cada aplicativo…";
+
+        try
+        {
+            var outcome = await orchestrator.RestoreOnlyModulesAsync(
+                new RestoreRequest(
+                    operationId, packageRoot, destinationProfileRoot,
+                    Path.Combine(destinationProfileRoot, "Public"), operationRoot),
+                moduleIds);
+
+            var cleanupLines = runCorporateCleanup
+                ? await ApplyCorporateCleanupAsync(destinationProfileRoot)
+                : [];
+
+            var sections = new List<ResultSection>
+            {
+                new("Onde foi restaurado", [destinationProfileRoot]),
+                new(
+                    "Aplicativos",
+                    outcome.Results.Count > 0
+                        ? [.. outcome.Results.Select(DescribeModuleOutcome)]
+                        : ["Nenhum aplicativo foi restaurado."],
+                    outcome.Succeeded ? ResultTone.Info : ResultTone.Warning),
+                new(
+                    "Arquivos pessoais",
+                    ["Não foram tocados nesta operação, como você escolheu."])
+            };
+
+            if (cleanupLines.Count > 0)
+            {
+                sections.Add(new ResultSection("Limpeza corporativa", cleanupLines));
+            }
+
+            var falhas = outcome.Results.Count(r => r.Outcome == ModuleOutcome.Failed);
+            if (falhas > 0)
+            {
+                sections.Add(new ResultSection(
+                    "Atenção",
+                    [
+                        "Os dados que já existiam no destino para os aplicativos que falharam " +
+                        "foram preservados — nada foi perdido.",
+                        "Feche o aplicativo que falhou e tente de novo apenas ele."
+                    ],
+                    ResultTone.Warning));
+            }
+
+            ShowResult(
+                outcome.Succeeded,
+                outcome.Succeeded ? "Aplicativos restaurados" : "Alguns aplicativos falharam",
+                $"{outcome.Results.Count(r => r.Outcome == ModuleOutcome.Applied)} de " +
+                $"{outcome.Results.Count} aplicativo(s) restaurado(s)",
+                sections);
+        }
+        catch (Exception ex)
+        {
+            ShowResult(
+                false,
+                "Falha ao restaurar aplicativos",
+                "A operação foi interrompida",
+                [new ResultSection("O que aconteceu", [ex.Message], ResultTone.Warning)]);
         }
     }
 

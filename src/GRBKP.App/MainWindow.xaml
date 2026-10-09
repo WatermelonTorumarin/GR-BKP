@@ -211,10 +211,28 @@
                                 <TextBlock Foreground="#FFFFE8A3" TextAlignment="Center" TextWrapping="Wrap"
                                            Text="Arquivos de mesmo nome serão substituídos. Thunderbird/Firefox/Chrome/Edge encontrados no destino serão fechados antes da restauração." />
                             </Border>
+                            <!--
+                                Escolha do que restaurar. Nasceu de um caso real: numa restauração
+                                de 50 GB um aplicativo ficou para trás, e recuperá-lo exigiria
+                                repetir tudo. Cada aplicativo é uma troca de árvore independente,
+                                então dá para refazer só o que faltou.
+                            -->
+                            <Border Background="#33123B55" BorderBrush="#554E9BC4" BorderThickness="1"
+                                    CornerRadius="10" Padding="14,10" Margin="0,0,0,14">
+                                <StackPanel>
+                                    <TextBlock Text="O que restaurar" Foreground="#FF9AE7FF" FontSize="14"
+                                               FontWeight="Bold" Margin="0,0,0,6" />
+                                    <CheckBox x:Name="RestorePersonalFilesCheckBox" IsChecked="True"
+                                              Content="Arquivos pessoais (Documentos, Área de Trabalho, Downloads, Imagens)"
+                                              Foreground="White" FontSize="14" Margin="0,0,0,4" />
+                                    <WrapPanel x:Name="RestoreModulesPanel" Orientation="Horizontal" />
+                                </StackPanel>
+                            </Border>
+
                             <CheckBox x:Name="CorporateCleanupCheckBox" IsChecked="True"
                                       Content="Remover OneDrive e Copilot deste computador (política padrão da empresa)"
                                       Foreground="White" FontSize="15" HorizontalAlignment="Center"
-                                      Margin="0,0,0,22" />
+                                      Margin="0,0,0,18" />
                             <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
                                 <Button Style="{StaticResource SecondaryButton}" Content="Voltar"
                                         Click="RestoreConfirmBack_Click" Margin="0,0,10,0" />

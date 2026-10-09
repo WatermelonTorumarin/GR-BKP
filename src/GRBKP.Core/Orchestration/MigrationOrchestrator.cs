@@ -94,9 +94,63 @@ public sealed class MigrationOrchestrator(
         CancellationToken cancellationToken = default) =>
         RunOrResumeRestoreAsync(request, null, cancellationToken);
 
+    /// <summary>
+    /// Restaura APENAS os aplicativos escolhidos, sem tocar nos arquivos pessoais.
+    ///
+    /// Existe por um caso real: numa restauração de 50 GB, um aplicativo ficou para trás e
+    /// recuperá-lo exigiria repetir a operação inteira — horas de cópia desnecessária, mais o
+    /// risco de mexer de novo em tudo o que já estava correto. Cada Module é uma troca de árvore
+    /// independente, então restaurar um só é seguro.
+    /// </summary>
+    public async Task<AppModuleRestoreOutcome> RestoreOnlyModulesAsync(
+        RestoreRequest request,
+        IReadOnlyCollection<string> moduleIds,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        ArgumentNullException.ThrowIfNull(moduleIds);
+        if (moduleCoordinator is null)
+        {
+            throw new InvalidOperationException(
+                "Este MigrationOrchestrator não foi construído com suporte a restauração.");
+        }
+
+        var package = await packageModule.ReadMetadataAsync(request.PackageRoot, cancellationToken)
+            .ConfigureAwait(false);
+
+        // Checkpoint sintético: nenhum Module lê este campo — eles só precisam de origem,
+        // destino e identificador da operação (usado nos nomes das pastas de proteção).
+        var context = new RestoreContext(
+            request.OperationId,
+            request.PackageRoot,
+            request.DestinationProfileRoot,
+            fileSystem,
+            new OperationCheckpoint(
+                request.OperationId,
+                package.BackupId,
+                OperationKind.Restore,
+                RestoreState.RestoringAppModules.ToString(),
+                null,
+                0,
+                null,
+                DurableCounters.Empty,
+                UpdatedAtUtc: clock.UtcNow));
+
+        return await moduleCoordinator
+            .RestoreAsync(context, moduleIds, cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    public Task<OrchestratedRestoreResult> RunOrResumeRestoreAsync(
+        RestoreRequest request,
+        IProgress<TransferProgress>? progress,
+        CancellationToken cancellationToken = default) =>
+        RunOrResumeRestoreAsync(request, progress, null, cancellationToken);
+
     public async Task<OrchestratedRestoreResult> RunOrResumeRestoreAsync(
         RestoreRequest request,
         IProgress<TransferProgress>? progress,
+        IReadOnlyCollection<string>? onlyModuleIds,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);
@@ -134,7 +188,7 @@ public sealed class MigrationOrchestrator(
             await restoreCheckpointStore.ReadAsync(request.OperationRoot, cancellationToken)
                 .ConfigureAwait(false));
         var moduleOutcome = await moduleCoordinator
-            .RestoreAsync(moduleContext, cancellationToken)
+            .RestoreAsync(moduleContext, onlyModuleIds, cancellationToken)
             .ConfigureAwait(false);
 
         return new OrchestratedRestoreResult(
