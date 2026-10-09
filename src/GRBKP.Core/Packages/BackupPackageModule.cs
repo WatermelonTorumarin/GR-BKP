@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -68,8 +69,14 @@ public sealed class BackupPackageModule(IFileSystemAdapter fileSystem, IClock cl
     {
         var metadata = await ReadMetadataAsync(packageRoot, cancellationToken).ConfigureAwait(false);
         var checkpoint = await ReadOperationAsync(packageRoot, cancellationToken).ConfigureAwait(false);
-        var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
         var manifestPath = Path.Combine(packageRoot, "files.jsonl");
+
+        // Antes de continuar, descarta qualquer sujeira no fim do manifesto deixada pela
+        // interrupção anterior (ver RepairManifestAsync). Sem isto, o backup retomado termina
+        // "completo" com uma linha impossível de interpretar e a restauração morre nela.
+        var scan = await RepairManifestAsync(manifestPath, cancellationToken).ConfigureAwait(false);
+
+        var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
         await using (var existingManifest = await fileSystem.OpenReadAsync(
             manifestPath,
             cancellationToken).ConfigureAwait(false))
@@ -87,6 +94,22 @@ public sealed class BackupPackageModule(IFileSystemAdapter fileSystem, IClock cl
                 hash.AppendData(buffer, 0, read);
             }
         }
+
+        // O manifesto é a autoridade sobre o que realmente está gravado no pacote: o checkpoint
+        // passa a refletir exatamente ele. Isso cobre os dois desencontros possíveis — checkpoint
+        // à frente do manifesto (linhas perdidas na queda) e manifesto à frente do checkpoint
+        // (linhas gravadas depois do último checkpoint durável, que seriam recopiadas e
+        // duplicadas).
+        checkpoint = checkpoint with
+        {
+            LastConfirmedSequence = scan.LastSequence,
+            LastConfirmedPath = scan.LastPath,
+            Counters = checkpoint.Counters with
+            {
+                CopiedFiles = scan.Files,
+                CopiedBytes = scan.Bytes
+            }
+        };
 
         var filesStream = await fileSystem.OpenWriteAsync(
             manifestPath,
@@ -172,6 +195,149 @@ public sealed class BackupPackageModule(IFileSystemAdapter fileSystem, IClock cl
 
             PackagePath.ValidateRelative(entry.PackageRelativePath);
             yield return entry;
+        }
+    }
+
+    private sealed record ManifestScan(long ValidBytes, long LastSequence, string? LastPath, long Files, long Bytes);
+
+    /// <summary>
+    /// Descarta o que estiver quebrado no fim do manifesto antes de uma retomada.
+    ///
+    /// Quando o SSD é desconectado (ou falta energia) no meio de um backup, o Windows já estendeu
+    /// o arquivo mas os dados ainda estavam em cache e se perdem; o NTFS preenche essa região com
+    /// ZEROS para não vazar conteúdo antigo do disco. Aconteceu em produção: o app retomava,
+    /// continuava anexando depois dos zeros e ainda calculava o hash por cima — o pacote terminava
+    /// "completo" com uma linha impossível de interpretar, e a restauração morria nela.
+    ///
+    /// A varredura para na PRIMEIRA linha inválida e descarta tudo dali em diante, mesmo que
+    /// existam linhas boas depois. É deliberado: só assim a numeração fica sem buracos. Manter as
+    /// linhas posteriores deixaria um vão de arquivos que nunca seriam recopiados — exatamente a
+    /// perda silenciosa que se quer evitar. O preço é recopiar esses arquivos, que é barato perto
+    /// de um pacote que não restaura.
+    ///
+    /// Um manifesto íntegro não é tocado: nada é reescrito e nada se perde.
+    /// </summary>
+    private async Task<ManifestScan> RepairManifestAsync(
+        string manifestPath,
+        CancellationToken cancellationToken)
+    {
+        var scan = await ScanManifestAsync(manifestPath, cancellationToken).ConfigureAwait(false);
+        var info = await fileSystem.GetInfoAsync(manifestPath, cancellationToken).ConfigureAwait(false);
+        if (info is null || info.Length == scan.ValidBytes)
+        {
+            return scan;
+        }
+
+        // Reescreve só o trecho válido, pelo mesmo padrão de temporário + renomeação usado no
+        // resto do pacote: ou o manifesto saneado aparece inteiro, ou o anterior continua lá.
+        var temporaryPath = manifestPath + ".grbkp.saneando";
+        await using (var source = await fileSystem.OpenReadAsync(manifestPath, cancellationToken)
+            .ConfigureAwait(false))
+        await using (var destination = await fileSystem.OpenWriteAsync(
+            temporaryPath, FileWriteMode.CreateOrOverwrite, cancellationToken).ConfigureAwait(false))
+        {
+            var buffer = new byte[128 * 1024];
+            var remaining = scan.ValidBytes;
+            while (remaining > 0)
+            {
+                var wanted = (int)Math.Min(buffer.Length, remaining);
+                var read = await source.ReadAsync(buffer.AsMemory(0, wanted), cancellationToken)
+                    .ConfigureAwait(false);
+                if (read == 0)
+                {
+                    break;
+                }
+
+                await destination.WriteAsync(buffer.AsMemory(0, read), cancellationToken)
+                    .ConfigureAwait(false);
+                remaining -= read;
+            }
+
+            await destination.FlushAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        await fileSystem.MoveAsync(temporaryPath, manifestPath, overwrite: true, cancellationToken)
+            .ConfigureAwait(false);
+        return scan;
+    }
+
+    private async Task<ManifestScan> ScanManifestAsync(
+        string manifestPath,
+        CancellationToken cancellationToken)
+    {
+        long validBytes = 0;
+        long lastSequence = 0;
+        long files = 0;
+        long bytes = 0;
+        string? lastPath = null;
+
+        await using var stream = await fileSystem.OpenReadAsync(manifestPath, cancellationToken)
+            .ConfigureAwait(false);
+        var buffer = new byte[128 * 1024];
+        var line = new List<byte>(1024);
+        long offset = 0;
+
+        while (true)
+        {
+            var read = await stream.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
+            if (read == 0)
+            {
+                break;
+            }
+
+            for (var index = 0; index < read; index++)
+            {
+                offset++;
+                var current = buffer[index];
+                if (current != (byte)'\n')
+                {
+                    line.Add(current);
+                    continue;
+                }
+
+                var entry = TryReadEntry(line);
+                if (entry is null)
+                {
+                    // Primeira linha quebrada: daqui em diante nada é confiável.
+                    return new ManifestScan(validBytes, lastSequence, lastPath, files, bytes);
+                }
+
+                validBytes = offset;
+                lastSequence = entry.Sequence;
+                lastPath = entry.PackageRelativePath;
+                files++;
+                bytes += entry.Length;
+                line.Clear();
+            }
+        }
+
+        // Sobrou conteúdo sem quebra de linha final: linha cortada pela metade, fica de fora.
+        return new ManifestScan(validBytes, lastSequence, lastPath, files, bytes);
+    }
+
+    private static FileManifestEntry? TryReadEntry(List<byte> line)
+    {
+        if (line.Count == 0)
+        {
+            return null;
+        }
+
+        try
+        {
+            var entry = JsonSerializer.Deserialize<FileManifestEntry>(
+                CollectionsMarshal.AsSpan(line), JsonLineOptions);
+            if (entry is null || string.IsNullOrWhiteSpace(entry.PackageRelativePath))
+            {
+                return null;
+            }
+
+            PackagePath.ValidateRelative(entry.PackageRelativePath);
+            return entry;
+        }
+        catch (Exception exception) when (
+            exception is JsonException or InvalidPackagePathException)
+        {
+            return null;
         }
     }
 
