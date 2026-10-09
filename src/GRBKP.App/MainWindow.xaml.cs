@@ -56,6 +56,7 @@ public partial class MainWindow : Window
     private string? restorePackageRoot;
     private string? restoreDestinationProfileRoot;
     private PackageMetadata? restoreMetadata;
+    private ManifestInspection? restoreManifestInspection;
     private readonly List<(string ModuleId, CheckBox Control)> restoreModuleOptions = [];
 
     /// <summary>
@@ -1248,9 +1249,37 @@ public partial class MainWindow : Window
                 return;
             }
 
+            // Prova o manifesto ANTES de qualquer coisa. Descobrir uma linha ilegível no meio da
+            // restauração significa parar com metade dos arquivos já gravados no perfil e sem
+            // dizer o porquê — foi exatamente o que aconteceu com o pacote do marcelo.
+            var inspecao = await packageModule.InspectManifestAsync(packageRoot);
+            if (!inspecao.IsIntact)
+            {
+                var resposta = MessageBox.Show(
+                    this,
+                    $"A lista de arquivos deste backup tem {inspecao.UnreadableLines.Count} " +
+                    "linha(s) ilegível(eis) — sinal de que o backup foi interrompido enquanto " +
+                    "era gravado.\n\n" +
+                    $"Dá para restaurar {inspecao.ValidEntries:N0} arquivo(s) normalmente. Os " +
+                    "descritos nas linhas danificadas não serão restaurados.\n\n" +
+                    "Continuar assim mesmo?\n\n" +
+                    "Sugestão: se o disco de origem ainda existir, refazer o backup traz tudo.",
+                    "Lista de arquivos com defeito",
+                    MessageBoxButton.YesNo,
+                    MessageBoxImage.Warning);
+                if (resposta != MessageBoxResult.Yes)
+                {
+                    RestoreSourceStatusText.Text =
+                        $"Restauração cancelada: {inspecao.UnreadableLines.Count} linha(s) da " +
+                        "lista de arquivos estão ilegíveis.";
+                    return;
+                }
+            }
+
             restorePackageRoot = packageRoot;
             restoreDestinationProfileRoot = destinationRoot;
             restoreMetadata = metadata;
+            restoreManifestInspection = inspecao;
             PopulateRestoreModuleChoices(metadata);
             RestoreConfirmationDetails.Text =
                 $"Origem: {packageRoot}\n" +
@@ -1473,6 +1502,19 @@ public partial class MainWindow : Window
                             "Abaixo está o relatório com cada arquivo e o motivo do erro.",
                             "Causas comuns: arquivo aberto em outro programa, sem permissão, ou " +
                             "danificado no pacote."
+                        ],
+                        ResultTone.Warning));
+                }
+
+                if (restoreManifestInspection is { IsIntact: false } inspecao)
+                {
+                    sections.Add(new ResultSection(
+                        $"{inspecao.UnreadableLines.Count} linha(s) da lista do backup estavam " +
+                        "ilegíveis",
+                        [
+                            "Os arquivos descritos nessas linhas não foram restaurados — eles se " +
+                            "perderam quando o backup foi interrompido.",
+                            "Se o disco de origem ainda existir, refazer o backup traz tudo."
                         ],
                         ResultTone.Warning));
                 }

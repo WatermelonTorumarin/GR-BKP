@@ -74,8 +74,11 @@ public sealed class BackupPackageVerifier(
         long verifiedBytes = 0;
         long hashCheckedFiles = 0;
 
+        // Uma linha ilegível vira achado do relatório, não exceção: a conferência existe
+        // justamente para dizer o que está errado no pacote, e morrer no meio seria o oposto.
+        var unreadableLines = new List<long>();
         await foreach (var entry in packageModule
-            .ReadFilesAsync(packageRoot, cancellationToken)
+            .ReadFilesAsync(packageRoot, unreadableLines, cancellationToken)
             .ConfigureAwait(false))
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -118,6 +121,16 @@ public sealed class BackupPackageVerifier(
             verifiedFiles++;
             verifiedBytes += info.Length;
             progress?.Report(verifiedFiles);
+        }
+
+        foreach (var linha in unreadableLines)
+        {
+            issues.Add(new PackageVerificationIssue(
+                "files.jsonl",
+                "manifest-line-unreadable",
+                $"A linha {linha} da lista de arquivos está ilegível — provavelmente o backup foi " +
+                "interrompido. O arquivo que ela descrevia não poderá ser restaurado; todo o " +
+                "resto do pacote continua utilizável."));
         }
 
         return new PackageVerificationReport(

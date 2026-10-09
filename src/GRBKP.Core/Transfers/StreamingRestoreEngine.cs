@@ -167,8 +167,14 @@ public sealed class StreamingRestoreEngine(
             // faria uma retomada pular arquivos que ainda não tinham sido restaurados.
             // As decisões por entrada (pular, preservar, filtrar pasta) continuam no laço serial,
             // porque são baratas; só a CÓPIA vai para a janela.
+            // Linhas ilegíveis do manifesto são anotadas e puladas, não abortam a restauração.
+            // Num pacote já fechado elas são perda consumada: parar por causa delas só acrescenta
+            // a perda de tudo o que vinha depois — foi o que aconteceu com o pacote do marcelo,
+            // onde uma linha destruída impedia a restauração de outras 51 mil entradas boas.
+            // O técnico é avisado pelo resultado e pela conferência prévia do pacote.
+            var unreadableLines = new List<long>();
             await foreach (var entry in packageModule
-                .ReadFilesAsync(request.PackageRoot, cancellationToken)
+                .ReadFilesAsync(request.PackageRoot, unreadableLines, cancellationToken)
                 .ConfigureAwait(false))
             {
                 if (entry.Sequence <= checkpoint.LastConfirmedSequence)
@@ -199,6 +205,15 @@ public sealed class StreamingRestoreEngine(
             };
             await checkpointStore.SaveAsync(request.OperationRoot, checkpoint, cancellationToken)
                 .ConfigureAwait(false);
+            foreach (var linha in unreadableLines)
+            {
+                failures.Add(new OperationError(
+                    "manifest-line-unreadable",
+                    $"A linha {linha} da lista de arquivos do backup está ilegível: o arquivo que " +
+                    "ela descrevia não pôde ser restaurado.",
+                    "files.jsonl"));
+            }
+
             var result = new RestoreOperationResult(
                 request.OperationId,
                 RestoreState.Complete,

@@ -8,6 +8,17 @@ using GRBKP.Core.Operations;
 
 namespace GRBKP.Core.Packages;
 
+/// <summary>
+/// Resultado de provar um manifesto: quantas entradas dá para ler e quais linhas estão ilegíveis.
+/// </summary>
+public sealed record ManifestInspection(
+    long TotalLines,
+    long ValidEntries,
+    IReadOnlyList<long> UnreadableLines)
+{
+    public bool IsIntact => UnreadableLines.Count == 0;
+}
+
 public sealed class BackupPackageModule(IFileSystemAdapter fileSystem, IClock clock)
 {
     internal static JsonSerializerOptions JsonOptions { get; } = CreateJsonOptions();
@@ -150,8 +161,71 @@ public sealed class BackupPackageModule(IFileSystemAdapter fileSystem, IClock cl
             Path.Combine(packageRoot, "operation.json"),
             cancellationToken).ConfigureAwait(false);
 
+    /// <summary>
+    /// Percorre o manifesto inteiro só para PROVAR se ele está legível, sem lançar exceção no
+    /// caminho. Serve para responder antes de usar: dá para restaurar com este pacote?
+    ///
+    /// Diferente da varredura usada na retomada de um backup, esta NÃO para na primeira linha
+    /// quebrada — ela conta todas. O motivo é a diferença de situação: num backup interrompido as
+    /// entradas seguintes serão recopiadas, então descartá-las é barato; num pacote já fechado
+    /// elas são tudo o que existe, e condenar cento e tantas mil entradas boas por causa de uma
+    /// quebrada seria jogar fora o backup inteiro.
+    /// </summary>
+    public async Task<ManifestInspection> InspectManifestAsync(
+        string packageRoot,
+        CancellationToken cancellationToken = default)
+    {
+        var unreadable = new List<long>();
+        long validEntries = 0;
+        long lineNumber = 0;
+
+        await using var stream = await fileSystem.OpenReadAsync(
+            Path.Combine(packageRoot, "files.jsonl"), cancellationToken).ConfigureAwait(false);
+        using var reader = new StreamReader(
+            stream, new UTF8Encoding(false, false), detectEncodingFromByteOrderMarks: true);
+
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var line = await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false);
+            if (line is null)
+            {
+                break;
+            }
+
+            lineNumber++;
+            if (string.IsNullOrWhiteSpace(line))
+            {
+                continue;
+            }
+
+            if (TryReadEntry(Utf8NoBom.GetBytes(line)) is null)
+            {
+                unreadable.Add(lineNumber);
+            }
+            else
+            {
+                validEntries++;
+            }
+        }
+
+        return new ManifestInspection(lineNumber, validEntries, unreadable);
+    }
+
+    public IAsyncEnumerable<FileManifestEntry> ReadFilesAsync(
+        string packageRoot,
+        CancellationToken cancellationToken = default) =>
+        ReadFilesAsync(packageRoot, null, cancellationToken);
+
+    /// <summary>
+    /// Lê o manifesto. Com <paramref name="unreadableLines"/> informado, uma linha ilegível é
+    /// anotada ali e pulada, em vez de abortar a leitura — assim um pacote já fechado com uma
+    /// linha destruída ainda devolve tudo o que resta. Sem ele, qualquer linha ruim é erro, que é
+    /// o que se quer em qualquer lugar onde pular seria perda silenciosa.
+    /// </summary>
     public async IAsyncEnumerable<FileManifestEntry> ReadFilesAsync(
         string packageRoot,
+        IList<long>? unreadableLines,
         [System.Runtime.CompilerServices.EnumeratorCancellation]
         CancellationToken cancellationToken = default)
     {
@@ -164,6 +238,7 @@ public sealed class BackupPackageModule(IFileSystemAdapter fileSystem, IClock cl
             detectEncodingFromByteOrderMarks: true,
             leaveOpen: false);
 
+        long lineNumber = 0;
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -173,30 +248,34 @@ public sealed class BackupPackageModule(IFileSystemAdapter fileSystem, IClock cl
                 yield break;
             }
 
+            lineNumber++;
             if (string.IsNullOrWhiteSpace(line))
             {
                 continue;
             }
 
-            FileManifestEntry? entry;
-            try
-            {
-                entry = JsonSerializer.Deserialize<FileManifestEntry>(line, JsonLineOptions);
-            }
-            catch (JsonException exception)
-            {
-                throw new InvalidDataException("Linha inválida em files.jsonl.", exception);
-            }
-
+            var entry = TryReadEntry(Utf8NoBom.GetBytes(line));
             if (entry is null)
             {
-                throw new InvalidDataException("Entrada nula em files.jsonl.");
+                if (unreadableLines is null)
+                {
+                    throw new InvalidDataException(
+                        $"Linha {lineNumber} de files.jsonl está ilegível.");
+                }
+
+                unreadableLines.Add(lineNumber);
+                continue;
             }
 
+            // Caminho inválido NUNCA é pulado, nem quando linhas ilegíveis são toleradas: isso é
+            // sinal de pacote adulterado (tentativa de escrever fora do destino), e aí a resposta
+            // certa é recusar o pacote inteiro, não restaurar o resto dele.
             PackagePath.ValidateRelative(entry.PackageRelativePath);
             yield return entry;
         }
     }
+
+    private static readonly UTF8Encoding Utf8NoBom = new(false);
 
     private sealed record ManifestScan(long ValidBytes, long LastSequence, string? LastPath, long Files, long Bytes);
 
@@ -295,7 +374,7 @@ public sealed class BackupPackageModule(IFileSystemAdapter fileSystem, IClock cl
                     continue;
                 }
 
-                var entry = TryReadEntry(line);
+                var entry = TryReadUsableEntry(line);
                 if (entry is null)
                 {
                     // Primeira linha quebrada: daqui em diante nada é confiável.
@@ -315,27 +394,54 @@ public sealed class BackupPackageModule(IFileSystemAdapter fileSystem, IClock cl
         return new ManifestScan(validBytes, lastSequence, lastPath, files, bytes);
     }
 
-    private static FileManifestEntry? TryReadEntry(List<byte> line)
+    private static FileManifestEntry? TryReadEntry(List<byte> line) =>
+        TryReadEntry(CollectionsMarshal.AsSpan(line));
+
+    /// <summary>
+    /// Só a LEITURA da linha: devolve <c>null</c> quando o texto não é um registro interpretável
+    /// (corrupção). A validação do CAMINHO fica fora de propósito — um caminho malicioso não é
+    /// corrupção acidental, é adulteração, e quem chama precisa poder recusar o pacote inteiro em
+    /// vez de pular a linha e seguir restaurando o resto.
+    /// </summary>
+    private static FileManifestEntry? TryReadEntry(ReadOnlySpan<byte> line)
     {
-        if (line.Count == 0)
+        if (line.Length == 0)
         {
             return null;
         }
 
         try
         {
-            var entry = JsonSerializer.Deserialize<FileManifestEntry>(
-                CollectionsMarshal.AsSpan(line), JsonLineOptions);
-            if (entry is null || string.IsNullOrWhiteSpace(entry.PackageRelativePath))
-            {
-                return null;
-            }
+            var entry = JsonSerializer.Deserialize<FileManifestEntry>(line, JsonLineOptions);
+            return entry is null || string.IsNullOrWhiteSpace(entry.PackageRelativePath)
+                ? null
+                : entry;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
 
+    /// <summary>
+    /// Linha legível E com caminho aceitável — o que a retomada precisa para considerar uma
+    /// entrada aproveitável. Aqui um caminho inválido encerra a varredura (o trecho é descartado),
+    /// que é o tratamento certo para um manifesto que vai ser reescrito de qualquer forma.
+    /// </summary>
+    private static FileManifestEntry? TryReadUsableEntry(List<byte> line)
+    {
+        var entry = TryReadEntry(line);
+        if (entry is null)
+        {
+            return null;
+        }
+
+        try
+        {
             PackagePath.ValidateRelative(entry.PackageRelativePath);
             return entry;
         }
-        catch (Exception exception) when (
-            exception is JsonException or InvalidPackagePathException)
+        catch (InvalidPackagePathException)
         {
             return null;
         }

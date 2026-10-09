@@ -61,6 +61,54 @@ public sealed class ResumeAfterCorruptionTests
         }
     }
 
+    /// <summary>
+    /// O que de fato importa no fim: um pacote que passou por interrupção + corrupção + retomada
+    /// tem que RESTAURAR, com todo arquivo chegando ao destino. Ler o manifesto sem erro é meio
+    /// caminho; o pacote só está bom quando serve para o que existe.
+    /// </summary>
+    [Fact]
+    public async Task APackageResumedAfterCorruption_RestoresCompletely()
+    {
+        using var fixture = new TemporaryDirectory();
+        var fileSystem = new WindowsFileSystemAdapter();
+        var packageRoot = fixture.PathFor("pacote-e2e");
+        var sources = fixture.CreateSourceFiles(50);
+
+        var interrompido = await BuildEngine(fileSystem).RunAsync(
+            new BackupRequest(Guid.NewGuid(), packageRoot, Metadata()),
+            ItemsThatFailAfter(sources, 30));
+        Assert.Equal(PackageState.Paused, interrompido.State);
+
+        CorruptManifestTail(packageRoot);
+
+        var retomado = await BuildEngine(fileSystem).ResumeAsync(
+            new BackupRequest(Guid.NewGuid(), packageRoot, Metadata()),
+            AllItems(sources));
+        Assert.Equal(PackageState.Complete, retomado.State);
+
+        // Agora a prova real: restaurar.
+        var destino = fixture.PathFor(@"destino\Users\teste");
+        var clock = new FixedClock();
+        var restauracao = await new StreamingRestoreEngine(
+            fileSystem, new BackupPackageModule(fileSystem, clock), clock).RunAsync(
+            new RestoreRequest(
+                Guid.NewGuid(),
+                packageRoot,
+                destino,
+                fixture.PathFor(@"destino\Users\Public"),
+                fixture.PathFor("operacao")));
+
+        Assert.Equal(RestoreState.Complete, restauracao.State);
+        Assert.Equal(50, restauracao.Counters.CopiedFiles);
+
+        foreach (var origem in sources)
+        {
+            var restaurado = Path.Combine(destino, "Documents", Path.GetFileName(origem));
+            Assert.True(File.Exists(restaurado), $"não restaurou: {Path.GetFileName(origem)}");
+            Assert.Equal(File.ReadAllText(origem), File.ReadAllText(restaurado));
+        }
+    }
+
     [Fact]
     public async Task Resume_AlsoRepairsAHalfWrittenLastLine()
     {
