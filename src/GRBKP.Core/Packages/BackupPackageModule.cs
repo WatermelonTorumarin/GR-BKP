@@ -524,6 +524,12 @@ public sealed class BackupPackageWriter : IAsyncDisposable
             packageRelativePath), cancellationToken).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// O journal é trilha de auditoria, não a fonte da verdade — quem manda é o files.jsonl. Por
+    /// isso o flush por linha foi trocado por flush junto do checkpoint: o conteúdo é o mesmo, e
+    /// numa queda o que importa (manifesto e checkpoint) continua com a mesma garantia de antes.
+    /// Eventos de estado continuam indo direto para o disco na hora.
+    /// </summary>
     public async Task AppendJournalAsync(
         JournalEntry entry,
         CancellationToken cancellationToken = default)
@@ -531,7 +537,11 @@ public sealed class BackupPackageWriter : IAsyncDisposable
         var line = JsonSerializer.Serialize(entry, BackupPackageModule.JsonLineOptions) + "\n";
         var bytes = Utf8.GetBytes(line);
         await journalStream.WriteAsync(bytes, cancellationToken).ConfigureAwait(false);
-        await journalStream.FlushAsync(cancellationToken).ConfigureAwait(false);
+
+        if (entry.EventType != "file-committed" && entry.EventType != "file-failed")
+        {
+            await journalStream.FlushAsync(cancellationToken).ConfigureAwait(false);
+        }
     }
 
     public async Task CompleteAsync(
@@ -590,6 +600,10 @@ public sealed class BackupPackageWriter : IAsyncDisposable
             Path.Combine(packageRoot, "operation.json"),
             checkpoint,
             cancellationToken).ConfigureAwait(false);
+
+        // O journal acompanha o checkpoint: a trilha de auditoria nunca fica mais atrasada do que
+        // o ponto de retomada gravado.
+        await journalStream.FlushAsync(cancellationToken).ConfigureAwait(false);
         filesSinceCheckpoint = 0;
         lastCheckpointAtUtc = clock.UtcNow;
     }

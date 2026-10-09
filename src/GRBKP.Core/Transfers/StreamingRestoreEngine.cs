@@ -35,7 +35,8 @@ public sealed class StreamingRestoreEngine(
     IClock clock,
     int bufferSize = 1024 * 1024,
     ReportModule? reportModule = null,
-    IReadOnlySet<string>? modulesHandledSeparately = null)
+    IReadOnlySet<string>? modulesHandledSeparately = null,
+    int maxConcurrentCopies = 4)
 {
     private readonly OperationCheckpointStore checkpointStore = new(fileSystem, clock);
     private readonly ReportModule reportModule = reportModule ?? new ReportModule(fileSystem, clock);
@@ -62,6 +63,12 @@ public sealed class StreamingRestoreEngine(
 
     private int filesSinceCheckpoint;
     private DateTimeOffset lastCheckpointAtUtc = DateTimeOffset.MinValue;
+
+    /// <summary>
+    /// Pastas já criadas nesta operação — evita pedir ao disco a criação da mesma pasta uma vez
+    /// por arquivo restaurado. Ver o mesmo no motor de backup.
+    /// </summary>
+    private readonly HashSet<string> createdDirectories = new(StringComparer.OrdinalIgnoreCase);
 
     public Task<RestoreOperationResult> RunAsync(
         RestoreRequest request,
@@ -101,6 +108,7 @@ public sealed class StreamingRestoreEngine(
         // com o lote de checkpoint zerado, para o comportamento não depender da operação anterior.
         filesSinceCheckpoint = 0;
         lastCheckpointAtUtc = DateTimeOffset.MinValue;
+        createdDirectories.Clear();
 
         var package = await packageModule.ReadMetadataAsync(
             request.PackageRoot,
@@ -150,8 +158,15 @@ public sealed class StreamingRestoreEngine(
         var counters = checkpoint.Counters;
         var preserved = new List<PreservedItem>();
         var failures = new List<OperationError>();
+        var window = new Queue<(FileManifestEntry Entry, Task<EntryOutcome> Work)>();
         try
         {
+            // Janela deslizante, igual à do backup: até N arquivos são copiados ao mesmo tempo,
+            // mas o checkpoint SEMPRE avança na ordem do manifesto. Isso é obrigatório, não
+            // estético — o ponto de retomada é uma única sequência, e avançá-lo fora de ordem
+            // faria uma retomada pular arquivos que ainda não tinham sido restaurados.
+            // As decisões por entrada (pular, preservar, filtrar pasta) continuam no laço serial,
+            // porque são baratas; só a CÓPIA vai para a janela.
             await foreach (var entry in packageModule
                 .ReadFilesAsync(request.PackageRoot, cancellationToken)
                 .ConfigureAwait(false))
@@ -161,112 +176,20 @@ public sealed class StreamingRestoreEngine(
                     continue;
                 }
 
-                if (entry.Classification == TransferClassification.ModuleData &&
-                    modulesHandledSeparately.Contains(entry.ModuleId))
+                window.Enqueue((entry, StartEntryAsync(request, package, entry, cancellationToken)));
+                if (window.Count >= maxConcurrentCopies)
                 {
-                    checkpoint = checkpoint with
-                    {
-                        LastConfirmedSequence = entry.Sequence,
-                        LastConfirmedPath = entry.PackageRelativePath,
-                        Counters = counters
-                    };
-                    await SaveCheckpointIfDueAsync(
-                        request.OperationRoot,
-                        checkpoint,
-                        cancellationToken).ConfigureAwait(false);
-                    continue;
+                    (counters, checkpoint) = await CommitOldestEntryAsync(
+                        request, window, counters, checkpoint, preserved, failures,
+                        progress, cancellationToken).ConfigureAwait(false);
                 }
+            }
 
-                if (entry.Classification is TransferClassification.UnclassifiedApplicationData or
-                    TransferClassification.ApplicationData or
-                    TransferClassification.ModuleData)
-                {
-                    preserved.Add(new PreservedItem(
-                        entry.ModuleId,
-                        entry.PackageRelativePath,
-                        "preserved-not-reintegrated"));
-                    counters = counters with { IgnoredFiles = counters.IgnoredFiles + 1 };
-                    checkpoint = checkpoint with
-                    {
-                        LastConfirmedSequence = entry.Sequence,
-                        LastConfirmedPath = entry.PackageRelativePath,
-                        Counters = counters
-                    };
-                    await SaveCheckpointIfDueAsync(
-                        request.OperationRoot,
-                        checkpoint,
-                        cancellationToken).ConfigureAwait(false);
-                    continue;
-                }
-
-                if (!IsWithinChosenFolders(request, package, entry))
-                {
-                    counters = counters with { IgnoredFiles = counters.IgnoredFiles + 1 };
-                    checkpoint = checkpoint with
-                    {
-                        LastConfirmedSequence = entry.Sequence,
-                        LastConfirmedPath = entry.PackageRelativePath,
-                        Counters = counters
-                    };
-                    await SaveCheckpointIfDueAsync(
-                        request.OperationRoot, checkpoint, cancellationToken).ConfigureAwait(false);
-                    continue;
-                }
-
-                var destinationPath = ResolveDestination(request, package, entry);
-                await EnsureNoReparseParentAsync(
-                    entry.Classification == TransferClassification.PublicFile
-                        ? request.DestinationPublicRoot
-                        : request.DestinationProfileRoot,
-                    destinationPath,
-                    cancellationToken).ConfigureAwait(false);
-
-                long copiedLength;
-                try
-                {
-                    copiedLength = await CopyOneAsync(
-                        request,
-                        entry,
-                        destinationPath,
-                        cancellationToken).ConfigureAwait(false);
-                }
-                catch (Exception exception) when (IsSingleFileFailure(exception))
-                {
-                    // Mesmo raciocínio do backup: um arquivo travado no destino (antivírus,
-                    // aplicativo aberto) não pode abortar a restauração e deixar o perfil pela
-                    // metade. Registra, contabiliza e segue para o próximo.
-                    counters = counters with { FailedFiles = counters.FailedFiles + 1 };
-                    failures.Add(new OperationError(
-                        "file-restore-failed", exception.Message, entry.PackageRelativePath));
-                    checkpoint = checkpoint with
-                    {
-                        LastConfirmedSequence = entry.Sequence,
-                        LastConfirmedPath = entry.PackageRelativePath,
-                        Counters = counters
-                    };
-                    await SaveCheckpointIfDueAsync(
-                        request.OperationRoot,
-                        checkpoint,
-                        cancellationToken).ConfigureAwait(false);
-                    continue;
-                }
-
-                counters = counters with
-                {
-                    CopiedFiles = counters.CopiedFiles + 1,
-                    CopiedBytes = checked(counters.CopiedBytes + copiedLength)
-                };
-                checkpoint = checkpoint with
-                {
-                    LastConfirmedSequence = entry.Sequence,
-                    LastConfirmedPath = entry.PackageRelativePath,
-                    Counters = counters
-                };
-                await SaveCheckpointIfDueAsync(
-                    request.OperationRoot,
-                    checkpoint,
-                    cancellationToken).ConfigureAwait(false);
-                progress?.Report(new TransferProgress(counters.CopiedFiles, counters.CopiedBytes));
+            while (window.Count > 0)
+            {
+                (counters, checkpoint) = await CommitOldestEntryAsync(
+                    request, window, counters, checkpoint, preserved, failures,
+                    progress, cancellationToken).ConfigureAwait(false);
             }
 
             checkpoint = checkpoint with
@@ -290,6 +213,7 @@ public sealed class StreamingRestoreEngine(
         }
         catch (StorageDisconnectedException exception)
         {
+            await ObserveWindowAsync(window).ConfigureAwait(false);
             checkpoint = checkpoint with
             {
                 State = RestoreState.Paused.ToString(),
@@ -309,6 +233,7 @@ public sealed class StreamingRestoreEngine(
         }
         catch (Exception exception) when (FileSystemFailures.IsDestinationDiskFull(exception))
         {
+            await ObserveWindowAsync(window).ConfigureAwait(false);
             checkpoint = checkpoint with
             {
                 State = RestoreState.Paused.ToString(),
@@ -331,6 +256,7 @@ public sealed class StreamingRestoreEngine(
         }
         catch (InvalidPackagePathException exception)
         {
+            await ObserveWindowAsync(window).ConfigureAwait(false);
             checkpoint = checkpoint with
             {
                 State = RestoreState.Failed.ToString(),
@@ -380,6 +306,148 @@ public sealed class StreamingRestoreEngine(
             .ConfigureAwait(false);
         filesSinceCheckpoint = 0;
         lastCheckpointAtUtc = clock.UtcNow;
+    }
+
+    /// <summary>
+    /// O que aconteceu com uma entrada do manifesto. Calculado fora de ordem (em paralelo), mas
+    /// aplicado aos contadores e ao checkpoint sempre na ordem do manifesto.
+    /// </summary>
+    private sealed record EntryOutcome(
+        bool Copied,
+        long Length,
+        bool Preserved,
+        bool Ignored,
+        Exception? Failure);
+
+    /// <summary>
+    /// Decide e executa o trabalho de UMA entrada. Só a cópia é cara; o resto é decisão barata
+    /// que poderia ficar no laço, mas fica aqui para a janela tratar todas as entradas de forma
+    /// uniforme — o checkpoint precisa avançar por TODAS elas, na ordem, inclusive as puladas.
+    /// </summary>
+    private async Task<EntryOutcome> StartEntryAsync(
+        RestoreRequest request,
+        PackageMetadata package,
+        FileManifestEntry entry,
+        CancellationToken cancellationToken)
+    {
+        if (entry.Classification == TransferClassification.ModuleData &&
+            modulesHandledSeparately.Contains(entry.ModuleId))
+        {
+            return new EntryOutcome(false, 0, false, false, null);
+        }
+
+        if (entry.Classification is TransferClassification.UnclassifiedApplicationData or
+            TransferClassification.ApplicationData or
+            TransferClassification.ModuleData)
+        {
+            return new EntryOutcome(false, 0, true, false, null);
+        }
+
+        if (!IsWithinChosenFolders(request, package, entry))
+        {
+            return new EntryOutcome(false, 0, false, true, null);
+        }
+
+        try
+        {
+            var destinationPath = ResolveDestination(request, package, entry);
+            await EnsureNoReparseParentAsync(
+                entry.Classification == TransferClassification.PublicFile
+                    ? request.DestinationPublicRoot
+                    : request.DestinationProfileRoot,
+                destinationPath,
+                cancellationToken).ConfigureAwait(false);
+
+            var copiedLength = await CopyOneAsync(
+                request, entry, destinationPath, cancellationToken).ConfigureAwait(false);
+            return new EntryOutcome(true, copiedLength, false, false, null);
+        }
+        catch (Exception exception) when (IsSingleFileFailure(exception))
+        {
+            // Um arquivo travado no destino (antivírus, aplicativo aberto) não pode abortar a
+            // restauração e deixar o perfil pela metade.
+            return new EntryOutcome(false, 0, false, false, exception);
+        }
+    }
+
+    /// <summary>
+    /// Fecha a entrada mais antiga da janela e aplica o resultado: é aqui que contadores e
+    /// checkpoint avançam, sempre na ordem do manifesto.
+    /// </summary>
+    private async Task<(DurableCounters Counters, OperationCheckpoint Checkpoint)> CommitOldestEntryAsync(
+        RestoreRequest request,
+        Queue<(FileManifestEntry Entry, Task<EntryOutcome> Work)> window,
+        DurableCounters counters,
+        OperationCheckpoint checkpoint,
+        List<PreservedItem> preserved,
+        List<OperationError> failures,
+        IProgress<TransferProgress>? progress,
+        CancellationToken cancellationToken)
+    {
+        var (entry, work) = window.Dequeue();
+        var outcome = await work.ConfigureAwait(false);
+
+        if (outcome.Copied)
+        {
+            counters = counters with
+            {
+                CopiedFiles = counters.CopiedFiles + 1,
+                CopiedBytes = checked(counters.CopiedBytes + outcome.Length)
+            };
+        }
+        else if (outcome.Preserved)
+        {
+            preserved.Add(new PreservedItem(
+                entry.ModuleId, entry.PackageRelativePath, "preserved-not-reintegrated"));
+            counters = counters with { IgnoredFiles = counters.IgnoredFiles + 1 };
+        }
+        else if (outcome.Ignored)
+        {
+            counters = counters with { IgnoredFiles = counters.IgnoredFiles + 1 };
+        }
+        else if (outcome.Failure is not null)
+        {
+            counters = counters with { FailedFiles = counters.FailedFiles + 1 };
+            failures.Add(new OperationError(
+                "file-restore-failed", outcome.Failure.Message, entry.PackageRelativePath));
+        }
+
+        checkpoint = checkpoint with
+        {
+            LastConfirmedSequence = entry.Sequence,
+            LastConfirmedPath = entry.PackageRelativePath,
+            Counters = counters
+        };
+        await SaveCheckpointIfDueAsync(request.OperationRoot, checkpoint, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (outcome.Copied)
+        {
+            progress?.Report(new TransferProgress(counters.CopiedFiles, counters.CopiedBytes));
+        }
+
+        return (counters, checkpoint);
+    }
+
+    /// <summary>
+    /// Depois de abortar, as cópias em voo precisam ser observadas — senão suas exceções viram
+    /// exceções de Task não observada.
+    /// </summary>
+    private static async Task ObserveWindowAsync(
+        Queue<(FileManifestEntry Entry, Task<EntryOutcome> Work)> window)
+    {
+        while (window.Count > 0)
+        {
+            var (_, work) = window.Dequeue();
+            try
+            {
+                await work.ConfigureAwait(false);
+            }
+            catch
+            {
+                // A falha que abortou a operação é a evidência relevante.
+            }
+        }
     }
 
     /// <summary>
@@ -474,8 +542,12 @@ public sealed class StreamingRestoreEngine(
         var sourcePath = PackagePath.ResolveInside(request.PackageRoot, entry.PackageRelativePath);
         var destinationDirectory = Path.GetDirectoryName(destinationPath)
             ?? throw new InvalidOperationException("Destino sem diretório pai.");
-        await fileSystem.CreateDirectoryAsync(destinationDirectory, cancellationToken)
-            .ConfigureAwait(false);
+        if (createdDirectories.Add(destinationDirectory))
+        {
+            await fileSystem.CreateDirectoryAsync(destinationDirectory, cancellationToken)
+                .ConfigureAwait(false);
+        }
+
         var temporaryPath = destinationPath + $".grbkp.partial.{request.OperationId:N}";
         var buffer = ArrayPool<byte>.Shared.Rent(bufferSize);
         long copied = 0;

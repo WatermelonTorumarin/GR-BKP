@@ -59,6 +59,14 @@ public sealed class StreamingBackupEngine(
 {
     private readonly StreamingBackupOptions options = options ?? new StreamingBackupOptions();
 
+    /// <summary>
+    /// Pastas já criadas nesta operação. O motor pedia a criação da pasta de destino a cada
+    /// arquivo, e um perfil com centenas de milhares de arquivos cabe em algumas milhares de
+    /// pastas — eram centenas de milhares de chamadas ao disco para recriar o que já existia.
+    /// </summary>
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, bool> createdDirectories =
+        new(StringComparer.OrdinalIgnoreCase);
+
     public async Task<BackupOperationResult> RunAsync(
         BackupRequest request,
         IAsyncEnumerable<TransferItem> items,
@@ -157,6 +165,7 @@ public sealed class StreamingBackupEngine(
         var resumeAfterSequence = resume ? writer.Checkpoint.LastConfirmedSequence : 0;
         var failures = new List<OperationError>();
         var window = new Queue<(TransferItem Item, Task<FileManifestEntry> Copy)>();
+        createdDirectories.Clear();
 
         try
         {
@@ -405,8 +414,11 @@ public sealed class StreamingBackupEngine(
             item.PackageRelativePath);
         var destinationDirectory = Path.GetDirectoryName(destinationPath)
             ?? throw new InvalidOperationException("Destino sem diretório pai.");
-        await fileSystem.CreateDirectoryAsync(destinationDirectory, cancellationToken)
-            .ConfigureAwait(false);
+        if (createdDirectories.TryAdd(destinationDirectory, true))
+        {
+            await fileSystem.CreateDirectoryAsync(destinationDirectory, cancellationToken)
+                .ConfigureAwait(false);
+        }
 
         var temporaryPath = destinationPath + $".grbkp.partial.{request.Metadata.BackupId:N}";
         long sourceLength;

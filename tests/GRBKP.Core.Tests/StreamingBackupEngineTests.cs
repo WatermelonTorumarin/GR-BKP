@@ -238,11 +238,26 @@ public sealed class StreamingBackupEngineTests
         Assert.Equal(RestoreState.Complete, completed.State);
         Assert.Equal(fileCount, completed.Counters.CopiedFiles);
         Assert.Equal(totalBytes, completed.Counters.CopiedBytes);
-        Assert.Equal(fileCount, fileSystem.RestoredFiles);
 
+        // Todo arquivo do pacote precisa ter chegado ao destino.
+        for (var numero = 1; numero <= fileCount; numero++)
+        {
+            Assert.True(fileSystem.HasFile(Path.Combine(
+                destinationRoot, "Documents", $"file-{numero:D6}.bin")));
+        }
+
+        // O número de GRAVAÇÕES pode passar de fileCount: com restauração paralela, no instante
+        // da desconexão havia cópias em voo que chegaram a terminar sem serem confirmadas, e a
+        // retomada as refaz. Diferente do backup, aqui elas NÃO são apagadas no aborto — o
+        // destino é o perfil real do usuário, e apagar poderia remover o arquivo que já existia
+        // ali antes. O desperdício é limitado à janela de concorrência.
+        Assert.InRange(fileSystem.RestoredFiles, fileCount, fileCount + 4);
+
+        // Retomar uma restauração JÁ concluída não pode gravar nem mais um arquivo.
+        var gravacoesAntes = fileSystem.RestoredFiles;
         var repeated = await resumedRestoreEngine.ResumeAsync(restoreRequest);
         Assert.Equal(RestoreState.Complete, repeated.State);
-        Assert.Equal(fileCount, fileSystem.RestoredFiles);
+        Assert.Equal(gravacoesAntes, fileSystem.RestoredFiles);
     }
 
     [Fact]
