@@ -12,7 +12,13 @@ public sealed record RestoreRequest(
     string PackageRoot,
     string DestinationProfileRoot,
     string DestinationPublicRoot,
-    string OperationRoot);
+    string OperationRoot,
+    /// <summary>
+    /// Quais pastas pessoais devolver à máquina (Desktop, Documents, Downloads, Pictures).
+    /// <c>null</c> = todas. Só existe na restauração: o pacote continua inteiro, e o técnico
+    /// escolhe o que recoloca — útil para devolver só o que faltou, sem repetir o resto.
+    /// </summary>
+    IReadOnlyCollection<string>? OnlyPersonalFolders = null);
 
 public sealed record RestoreOperationResult(
     Guid OperationId,
@@ -193,6 +199,20 @@ public sealed class StreamingRestoreEngine(
                     continue;
                 }
 
+                if (!IsWithinChosenFolders(request, package, entry))
+                {
+                    counters = counters with { IgnoredFiles = counters.IgnoredFiles + 1 };
+                    checkpoint = checkpoint with
+                    {
+                        LastConfirmedSequence = entry.Sequence,
+                        LastConfirmedPath = entry.PackageRelativePath,
+                        Counters = counters
+                    };
+                    await SaveCheckpointIfDueAsync(
+                        request.OperationRoot, checkpoint, cancellationToken).ConfigureAwait(false);
+                    continue;
+                }
+
                 var destinationPath = ResolveDestination(request, package, entry);
                 await EnsureNoReparseParentAsync(
                     entry.Classification == TransferClassification.PublicFile
@@ -360,6 +380,36 @@ public sealed class StreamingRestoreEngine(
             .ConfigureAwait(false);
         filesSinceCheckpoint = 0;
         lastCheckpointAtUtc = clock.UtcNow;
+    }
+
+    /// <summary>
+    /// O técnico escolheu só algumas pastas pessoais? Decide pelo primeiro trecho do caminho
+    /// depois do prefixo do perfil (ou de Public). Entradas de AppData não passam por aqui: elas
+    /// são preservadas no pacote e nunca reintegradas, com ou sem filtro.
+    /// </summary>
+    private static bool IsWithinChosenFolders(
+        RestoreRequest request,
+        PackageMetadata package,
+        FileManifestEntry entry)
+    {
+        if (request.OnlyPersonalFolders is null)
+        {
+            return true;
+        }
+
+        var prefix = entry.Classification == TransferClassification.PublicFile
+            ? "data/Users/Public/"
+            : $"data/Users/{package.Profile.Name}/";
+        if (!entry.PackageRelativePath.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        var relative = entry.PackageRelativePath[prefix.Length..];
+        var separator = relative.IndexOf('/');
+        var folder = separator < 0 ? relative : relative[..separator];
+
+        return request.OnlyPersonalFolders.Contains(folder, StringComparer.OrdinalIgnoreCase);
     }
 
     private static string ResolveDestination(

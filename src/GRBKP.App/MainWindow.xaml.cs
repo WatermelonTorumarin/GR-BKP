@@ -398,22 +398,182 @@ public partial class MainWindow : Window
     internal void ShowUnexpectedError(Exception exception)
     {
         operationInProgress = false;
-        ShowResult(
-            false,
-            "Erro inesperado",
-            "A operação foi interrompida",
-            [
-                new ResultSection(
-                    "O que aconteceu",
-                    [exception.Message],
-                    ResultTone.Warning),
-                new ResultSection(
-                    "O que fazer",
-                    [
-                        "Anote a mensagem acima e tente de novo.",
-                        "Se a origem ainda estiver disponível, nada foi perdido."
-                    ])
-            ]);
+        ShowFailure("Erro inesperado", "A operação foi interrompida", exception, "erro inesperado");
+    }
+
+    /// <summary>
+    /// Toda falha inesperada passa por aqui. A mensagem crua de uma exceção quase nunca diz ao
+    /// técnico o que houve nem o que fazer ("Access to the path is denied" não ajuda ninguém às
+    /// 8 da manhã com um funcionário esperando a máquina). Então a tela recebe: uma explicação em
+    /// português do tipo de problema, o que fazer a respeito, e um relatório completo em arquivo
+    /// — com a cadeia de exceções e a pilha — para quando a explicação curta não bastar.
+    /// </summary>
+    private void ShowFailure(
+        string title,
+        string headline,
+        Exception exception,
+        string contexto)
+    {
+        var reportPath = WriteErrorReport(exception, contexto);
+        var (explicacao, oQueFazer) = ExplainFailure(exception);
+
+        var sections = new List<ResultSection>
+        {
+            new("O que aconteceu", [explicacao], ResultTone.Warning),
+            new("O que fazer", oQueFazer),
+            new("Detalhe técnico", [DescribeExceptionChain(exception)])
+        };
+
+        if (reportPath is not null)
+        {
+            sections.Add(new ResultSection(
+                "Relatório completo",
+                ["Salvo em: " + reportPath, "Use o botão abaixo para abrir."]));
+        }
+
+        ShowResult(false, title, headline, sections, reportPath);
+    }
+
+    /// <summary>
+    /// Traduz o tipo de falha para linguagem de quem está na frente da máquina, com o próximo
+    /// passo concreto. A ordem importa: do caso mais específico para o mais genérico.
+    /// </summary>
+    private static (string Explicacao, IReadOnlyList<string> OQueFazer) ExplainFailure(
+        Exception exception)
+    {
+        if (FileSystemFailures.IsDestinationDiskFull(exception))
+        {
+            return (
+                "O disco de destino ficou sem espaço.",
+                [
+                    "Libere espaço no disco de destino e repita a operação.",
+                    "Nada do que já foi copiado se perdeu."
+                ]);
+        }
+
+        return exception switch
+        {
+            UnauthorizedAccessException => (
+                "O Windows negou acesso a um arquivo ou pasta.",
+                [
+                    "Confirme que o app está rodando como administrador (ele pede isso ao abrir).",
+                    "Se o arquivo veio de outro computador, as permissões dele podem apontar " +
+                    "para um usuário que não existe nesta máquina.",
+                    "Veja no relatório completo qual caminho foi recusado."
+                ]),
+            DirectoryNotFoundException or FileNotFoundException => (
+                "Um caminho esperado não foi encontrado.",
+                [
+                    "Confira se o SSD continua conectado e com a mesma letra de unidade.",
+                    "Se a letra mudou no meio da operação, refaça a seleção de origem e destino.",
+                    "O caminho exato está no relatório completo."
+                ]),
+            IOException => (
+                "Houve uma falha de leitura ou gravação no disco.",
+                [
+                    "A causa mais comum é o SSD ter sido desconectado ou o cabo ter mau contato.",
+                    "Verifique a conexão e repita — um backup interrompido pode ser retomado de " +
+                    "onde parou.",
+                    "Se repetir no mesmo arquivo, o disco de origem pode ter setor danificado."
+                ]),
+            InvalidDataException => (
+                "O conteúdo do pacote de backup não está como o esperado.",
+                [
+                    "Use \"Conferir um backup\" para ver exatamente o que está errado no pacote.",
+                    "NÃO formate a origem antes de resolver isso."
+                ]),
+            OperationCanceledException => (
+                "A operação foi cancelada antes de terminar.",
+                ["Repita quando quiser — nada do que já foi feito se perdeu."]),
+            _ => (
+                $"Falha não prevista ({exception.GetType().Name}).",
+                [
+                    "Abra o relatório completo e me envie: ele tem a pilha de chamadas, que " +
+                    "aponta o ponto exato da falha.",
+                    "Se a origem ainda estiver disponível, nada foi perdido."
+                ])
+        };
+    }
+
+    private static string DescribeExceptionChain(Exception exception)
+    {
+        var partes = new List<string>();
+        var atual = exception;
+        var nivel = 0;
+        while (atual is not null && nivel < 5)
+        {
+            partes.Add($"{atual.GetType().Name}: {atual.Message}");
+            atual = atual.InnerException;
+            nivel++;
+        }
+
+        return string.Join("  →  ", partes);
+    }
+
+    /// <summary>
+    /// Relatório completo em arquivo, fora do pacote (a falha pode ser justamente não conseguir
+    /// escrever nele): fica em ProgramData, onde sobrevive a trocar de perfil e de pendrive.
+    /// </summary>
+    private string? WriteErrorReport(Exception exception, string contexto)
+    {
+        try
+        {
+            var pasta = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
+                "GRBKP", "erros");
+            Directory.CreateDirectory(pasta);
+            var caminho = Path.Combine(pasta, $"erro-{DateTime.Now:yyyy-MM-dd_HH-mm-ss}.txt");
+
+            var linhas = new List<string>
+            {
+                "GR BKP — relatório de erro",
+                $"Data ............. {DateTime.Now:dd/MM/yyyy HH:mm:ss}",
+                $"Computador ....... {Environment.MachineName}",
+                $"Usuário .......... {Environment.UserName}",
+                $"Windows .......... {Environment.OSVersion.VersionString}",
+                $"Contexto ......... {contexto}",
+                string.Empty,
+                "--- O que estava acontecendo ---",
+                $"Origem selecionada ..... {sourceVolumeRoot ?? "(nenhuma)"}",
+                $"Pacote da restauração .. {restorePackageRoot ?? "(nenhum)"}",
+                $"Destino da restauração . {restoreDestinationProfileRoot ?? "(nenhum)"}",
+                string.Empty,
+                "--- Erro ---"
+            };
+
+            var atual = exception;
+            var nivel = 0;
+            while (atual is not null)
+            {
+                var recuo = new string(' ', nivel * 2);
+                linhas.Add($"{recuo}[{nivel}] {atual.GetType().FullName}");
+                linhas.Add($"{recuo}     {atual.Message}");
+                if (atual is IOException && atual.HResult != 0)
+                {
+                    linhas.Add($"{recuo}     HResult: 0x{atual.HResult:X8}");
+                }
+
+                if (!string.IsNullOrWhiteSpace(atual.StackTrace))
+                {
+                    linhas.Add($"{recuo}     Pilha:");
+                    foreach (var quadro in atual.StackTrace.Split('\n'))
+                    {
+                        linhas.Add($"{recuo}       {quadro.TrimEnd()}");
+                    }
+                }
+
+                linhas.Add(string.Empty);
+                atual = atual.InnerException;
+                nivel++;
+            }
+
+            File.WriteAllLines(caminho, linhas, Encoding.UTF8);
+            return caminho;
+        }
+        catch (Exception falha) when (falha is IOException or UnauthorizedAccessException)
+        {
+            return null;
+        }
     }
 
     private void Finish_Click(object sender, RoutedEventArgs e)
@@ -727,11 +887,7 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            ShowResult(
-                false,
-                "Falha no backup",
-                "A operação foi interrompida",
-                [new ResultSection("O que aconteceu", [ex.Message], ResultTone.Warning)]);
+            ShowFailure("Falha no backup", "A operação foi interrompida", ex, "backup");
         }
         finally
         {
@@ -1060,11 +1216,9 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            ShowResult(
-                false,
-                "Não foi possível conferir",
-                "A conferência não pôde ser feita",
-                [new ResultSection("O que aconteceu", [ex.Message], ResultTone.Warning)]);
+            ShowFailure(
+                "Não foi possível conferir", "A conferência não pôde ser feita", ex,
+                "conferência de pacote");
         }
         finally
         {
@@ -1168,6 +1322,35 @@ public partial class MainWindow : Window
         _ => moduleId
     };
 
+    private void TogglePersonalFolders_Click(object sender, RoutedEventArgs e)
+    {
+        var abrindo = PersonalFoldersPanel.Visibility != Visibility.Visible;
+        PersonalFoldersPanel.Visibility = abrindo ? Visibility.Visible : Visibility.Collapsed;
+        PersonalFoldersToggle.Content = abrindo ? "⌃  ocultar pastas" : "⌄  escolher pastas";
+    }
+
+    /// <summary>
+    /// Pastas pessoais marcadas. Devolve <c>null</c> quando TODAS estão marcadas — assim a
+    /// restauração segue pelo caminho normal, sem filtro nenhum, que é o caso comum.
+    /// </summary>
+    private IReadOnlyCollection<string>? ChosenPersonalFolders()
+    {
+        var escolhas = new (CheckBox Caixa, string Pasta)[]
+        {
+            (FolderDesktopCheckBox, "Desktop"),
+            (FolderDocumentsCheckBox, "Documents"),
+            (FolderDownloadsCheckBox, "Downloads"),
+            (FolderPicturesCheckBox, "Pictures")
+        };
+
+        if (escolhas.All(escolha => escolha.Caixa.IsChecked == true))
+        {
+            return null;
+        }
+
+        return [.. escolhas.Where(escolha => escolha.Caixa.IsChecked == true).Select(e => e.Pasta)];
+    }
+
     private void RestoreConfirmBack_Click(object sender, RoutedEventArgs e) => ShowPage(RestoreSourcePage);
 
     private async void ConfirmRestore_Click(object sender, RoutedEventArgs e)
@@ -1185,10 +1368,21 @@ public partial class MainWindow : Window
 
         var runCorporateCleanup = CorporateCleanupCheckBox.IsChecked == true;
         var restorePersonalFiles = RestorePersonalFilesCheckBox.IsChecked == true;
+        var chosenFolders = ChosenPersonalFolders();
         var chosenModules = restoreModuleOptions
             .Where(option => option.Control.IsChecked == true)
             .Select(option => option.ModuleId)
             .ToList();
+
+        if (restorePersonalFiles && chosenFolders is { Count: 0 })
+        {
+            MessageBox.Show(
+                this,
+                "Você marcou \"Arquivos pessoais\" mas desmarcou todas as pastas. " +
+                "Escolha pelo menos uma pasta, ou desmarque os arquivos pessoais.",
+                "GR BKP");
+            return;
+        }
 
         if (!restorePersonalFiles && chosenModules.Count == 0)
         {
@@ -1231,7 +1425,7 @@ public partial class MainWindow : Window
             var result = await orchestrator.RunOrResumeRestoreAsync(
                 new RestoreRequest(
                     operationId, restorePackageRoot, restoreDestinationProfileRoot,
-                    publicRoot, operationRoot),
+                    publicRoot, operationRoot, chosenFolders),
                 new Progress<TransferProgress>(value => ReportProgress(value)),
                 chosenModules);
 
@@ -1338,11 +1532,7 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            ShowResult(
-                false,
-                "Falha na restauração",
-                "A operação foi interrompida",
-                [new ResultSection("O que aconteceu", [ex.Message], ResultTone.Warning)]);
+            ShowFailure("Falha na restauração", "A operação foi interrompida", ex, "restauração");
         }
         finally
         {
@@ -1421,11 +1611,9 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            ShowResult(
-                false,
-                "Falha ao restaurar aplicativos",
-                "A operação foi interrompida",
-                [new ResultSection("O que aconteceu", [ex.Message], ResultTone.Warning)]);
+            ShowFailure(
+                "Falha ao restaurar aplicativos", "A operação foi interrompida", ex,
+                "restauração somente de aplicativos");
         }
     }
 

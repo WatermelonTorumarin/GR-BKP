@@ -222,10 +222,49 @@
                                 <StackPanel>
                                     <TextBlock Text="O que restaurar" Foreground="#FF9AE7FF" FontSize="14"
                                                FontWeight="Bold" Margin="0,0,0,6" />
-                                    <CheckBox x:Name="RestorePersonalFilesCheckBox" IsChecked="True"
-                                              Content="Arquivos pessoais (Documentos, Área de Trabalho, Downloads, Imagens)"
-                                              Foreground="White" FontSize="14" Margin="0,0,0,4" />
-                                    <WrapPanel x:Name="RestoreModulesPanel" Orientation="Horizontal" />
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <CheckBox x:Name="RestorePersonalFilesCheckBox" IsChecked="True"
+                                                  Content="Arquivos pessoais"
+                                                  Foreground="White" FontSize="14"
+                                                  VerticalAlignment="Center" />
+                                        <!-- Seta discreta: abre a escolha de pastas sem poluir a tela. -->
+                                        <Button Grid.Column="1" x:Name="PersonalFoldersToggle"
+                                                Click="TogglePersonalFolders_Click"
+                                                Content="⌄  escolher pastas"
+                                                Background="Transparent" BorderThickness="0"
+                                                Foreground="#FF9AE7FF" FontSize="12.5"
+                                                Padding="8,0,0,0" Cursor="Hand"
+                                                VerticalAlignment="Center" />
+                                    </Grid>
+                                    <Border x:Name="PersonalFoldersPanel" Visibility="Collapsed"
+                                            Background="#22000000" CornerRadius="8"
+                                            Padding="12,8" Margin="18,6,0,4">
+                                        <StackPanel>
+                                            <TextBlock Text="Quais pastas devolver para este computador:"
+                                                       Foreground="#FFBFE6F7" FontSize="12.5"
+                                                       Margin="0,0,0,5" />
+                                            <WrapPanel Orientation="Horizontal">
+                                                <CheckBox x:Name="FolderDesktopCheckBox" IsChecked="True"
+                                                          Content="Área de Trabalho" Foreground="White"
+                                                          FontSize="13.5" Margin="0,2,16,2" />
+                                                <CheckBox x:Name="FolderDocumentsCheckBox" IsChecked="True"
+                                                          Content="Documentos" Foreground="White"
+                                                          FontSize="13.5" Margin="0,2,16,2" />
+                                                <CheckBox x:Name="FolderDownloadsCheckBox" IsChecked="True"
+                                                          Content="Downloads" Foreground="White"
+                                                          FontSize="13.5" Margin="0,2,16,2" />
+                                                <CheckBox x:Name="FolderPicturesCheckBox" IsChecked="True"
+                                                          Content="Imagens" Foreground="White"
+                                                          FontSize="13.5" Margin="0,2,16,2" />
+                                            </WrapPanel>
+                                        </StackPanel>
+                                    </Border>
+                                    <WrapPanel x:Name="RestoreModulesPanel" Orientation="Horizontal"
+                                               Margin="0,4,0,0" />
                                 </StackPanel>
                             </Border>
 
