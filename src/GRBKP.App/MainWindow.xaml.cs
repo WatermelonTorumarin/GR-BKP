@@ -730,7 +730,7 @@ public partial class MainWindow : Window
         }
 
         // Antes de fechar os programas: as senhas do navegador precisam de um passo à parte.
-        if (!ConfirmBrowserPasswords(profile, sourceVolumeRoot))
+        if (!await ConfirmBrowserPasswordsAsync(profile, sourceVolumeRoot))
         {
             return;
         }
@@ -981,14 +981,26 @@ public partial class MainWindow : Window
     /// Só faz sentido na máquina EM USO: a exportação exige o navegador rodando com o usuário
     /// logado. Num SSD desconectado não há o que exportar, e o passo é pulado.
     /// </summary>
-    private bool ConfirmBrowserPasswords(DiscoveredProfile profile, string sourceVolumeRoot)
+    private async Task<bool> ConfirmBrowserPasswordsAsync(
+        DiscoveredProfile profile, string sourceVolumeRoot)
     {
         if (!SourceIsLiveSystemVolume(sourceVolumeRoot))
         {
             return true;
         }
 
-        var navegadores = DetectBrowsersWithProfiles(profile.ProfileRoot);
+        IReadOnlyList<InstalledBrowser> navegadores;
+        try
+        {
+            navegadores = await new InstalledBrowserDetector(fileSystem)
+                .DetectAsync(profile.ProfileRoot);
+        }
+        catch (Exception)
+        {
+            // Detecção é só para o aviso: se falhar, segue sem atrapalhar o backup.
+            return true;
+        }
+
         if (navegadores.Count == 0)
         {
             return true;
@@ -996,7 +1008,7 @@ public partial class MainWindow : Window
 
         var answer = MessageBox.Show(
             this,
-            $"Este perfil usa: {string.Join(", ", navegadores.Select(browser => browser.Nome))}.\n\n" +
+            $"Este perfil usa: {string.Join(", ", navegadores.Select(browser => browser.Name))}.\n\n" +
             "As SENHAS salvas no navegador NÃO são copiadas pelo backup — o Windows as protege de " +
             "um jeito que não permite movê-las de uma máquina para outra. Favoritos, histórico e " +
             "extensões vão normalmente; só as senhas é que precisam de um passo à parte.\n\n" +
@@ -1035,25 +1047,6 @@ public partial class MainWindow : Window
         return true;
     }
 
-    private static IReadOnlyList<(string Nome, string ModuleId)> DetectBrowsersWithProfiles(
-        string profileRoot)
-    {
-        var encontrados = new List<(string Nome, string ModuleId)>();
-
-        void Checa(string nome, string moduleId, IReadOnlyList<string> segmentos)
-        {
-            if (Directory.Exists(Path.Combine([profileRoot, .. segmentos])))
-            {
-                encontrados.Add((nome, moduleId));
-            }
-        }
-
-        Checa("Microsoft Edge", "edge", ChromiumBrowserDescriptor.Edge.AppDataRelativeSegments);
-        Checa("Google Chrome", "chrome", ChromiumBrowserDescriptor.Chrome.AppDataRelativeSegments);
-        Checa("Firefox", "firefox", FirefoxMigrationModule.AppDataRelativeSegments);
-        return encontrados;
-    }
-
     /// <summary>
     /// Abre a página de senhas do navegador presente, preferindo o Edge (padrão da empresa). Usa
     /// o nome do executável via ShellExecute (resolvido pelo App Paths do Windows), então não
@@ -1061,7 +1054,7 @@ public partial class MainWindow : Window
     /// passos manuais.
     /// </summary>
     private static bool OpenBrowserPasswordsPage(
-        IReadOnlyList<(string Nome, string ModuleId)> navegadores)
+        IReadOnlyList<InstalledBrowser> navegadores)
     {
         (string Exe, string Url)? alvo =
             navegadores.Any(browser => browser.ModuleId == "edge")
