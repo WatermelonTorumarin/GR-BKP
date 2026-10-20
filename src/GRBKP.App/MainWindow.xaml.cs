@@ -8,8 +8,10 @@ using System.Windows.Media.Imaging;
 using GRBKP.Core.Adapters;
 using GRBKP.Core.Discovery;
 using GRBKP.Core.Modules;
+using GRBKP.Core.Modules.Chromium;
 using GRBKP.Core.Modules.CorporateCleanup;
 using GRBKP.Core.Modules.FileZilla;
+using GRBKP.Core.Modules.Firefox;
 using GRBKP.Core.Modules.Printing;
 using GRBKP.Core.Operations;
 using GRBKP.Core.Orchestration;
@@ -727,6 +729,12 @@ public partial class MainWindow : Window
             return;
         }
 
+        // Antes de fechar os programas: as senhas do navegador precisam de um passo à parte.
+        if (!ConfirmBrowserPasswords(profile, sourceVolumeRoot))
+        {
+            return;
+        }
+
         if (!await ConfirmOpenApplicationsAsync(sourceVolumeRoot))
         {
             return;
@@ -959,6 +967,159 @@ public partial class MainWindow : Window
         }
 
         return true;
+    }
+
+    /// <summary>
+    /// As SENHAS salvas no Edge/Chrome/Firefox NÃO entram no backup: o navegador as cifra com uma
+    /// chave amarrada à conta do Windows de origem (DPAPI), que não existe na máquina de destino.
+    /// É uma proteção do Windows, não um limite do app — se bastasse copiar a pasta para abrir as
+    /// senhas, qualquer um com o disco teria as senhas de todo mundo. Por isso o app NÃO tenta
+    /// extrair as senhas (seria reimplementar roubo de credencial, e quebraria a cada atualização);
+    /// em vez disso guia o técnico pelas duas formas oficiais do próprio navegador: sincronização
+    /// com a conta da empresa (definitiva) ou exportar/importar um arquivo (por migração).
+    ///
+    /// Só faz sentido na máquina EM USO: a exportação exige o navegador rodando com o usuário
+    /// logado. Num SSD desconectado não há o que exportar, e o passo é pulado.
+    /// </summary>
+    private bool ConfirmBrowserPasswords(DiscoveredProfile profile, string sourceVolumeRoot)
+    {
+        if (!SourceIsLiveSystemVolume(sourceVolumeRoot))
+        {
+            return true;
+        }
+
+        var navegadores = DetectBrowsersWithProfiles(profile.ProfileRoot);
+        if (navegadores.Count == 0)
+        {
+            return true;
+        }
+
+        var answer = MessageBox.Show(
+            this,
+            $"Este perfil usa: {string.Join(", ", navegadores.Select(browser => browser.Nome))}.\n\n" +
+            "As SENHAS salvas no navegador NÃO são copiadas pelo backup — o Windows as protege de " +
+            "um jeito que não permite movê-las de uma máquina para outra. Favoritos, histórico e " +
+            "extensões vão normalmente; só as senhas é que precisam de um passo à parte.\n\n" +
+            "Duas formas de preservá-las:\n" +
+            "  1) Deixar o navegador sincronizado com a conta da empresa — as senhas voltam " +
+            "sozinhas no computador novo. É a forma definitiva.\n" +
+            "  2) Exportar as senhas agora para um arquivo e importar depois no destino.\n\n" +
+            "Deseja ABRIR a página de senhas agora para exportar?\n\n" +
+            "Sim = abro a página de senhas; exporte e clique OK para seguir.\n" +
+            "Não = seguir sem exportar (ex.: a sincronização já cuida disso).\n" +
+            "Cancelar = voltar.",
+            "Senhas do navegador",
+            MessageBoxButton.YesNoCancel,
+            MessageBoxImage.Information);
+
+        if (answer == MessageBoxResult.Cancel)
+        {
+            return false;
+        }
+
+        if (answer == MessageBoxResult.Yes)
+        {
+            var aberto = OpenBrowserPasswordsPage(navegadores);
+            var instrucoes = aberto
+                ? "Na página que abriu: clique nos três pontinhos ao lado de \"Senhas salvas\" e " +
+                  "escolha \"Exportar senhas\". O Windows vai pedir o seu PIN.\n\n" +
+                  "Guarde o arquivo num pendrive seguro e apague-o depois de importar no destino " +
+                  "(ele fica em texto puro).\n\n" +
+                  "Clique OK quando terminar de exportar para continuar o backup."
+                : "Abra o navegador e vá em Configurações → Senhas → Exportar senhas. Guarde o " +
+                  "arquivo num pendrive seguro.\n\nClique OK quando terminar para continuar o backup.";
+            MessageBox.Show(
+                this, instrucoes, "Exportar senhas", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+
+        return true;
+    }
+
+    private static IReadOnlyList<(string Nome, string ModuleId)> DetectBrowsersWithProfiles(
+        string profileRoot)
+    {
+        var encontrados = new List<(string Nome, string ModuleId)>();
+
+        void Checa(string nome, string moduleId, IReadOnlyList<string> segmentos)
+        {
+            if (Directory.Exists(Path.Combine([profileRoot, .. segmentos])))
+            {
+                encontrados.Add((nome, moduleId));
+            }
+        }
+
+        Checa("Microsoft Edge", "edge", ChromiumBrowserDescriptor.Edge.AppDataRelativeSegments);
+        Checa("Google Chrome", "chrome", ChromiumBrowserDescriptor.Chrome.AppDataRelativeSegments);
+        Checa("Firefox", "firefox", FirefoxMigrationModule.AppDataRelativeSegments);
+        return encontrados;
+    }
+
+    /// <summary>
+    /// Abre a página de senhas do navegador presente, preferindo o Edge (padrão da empresa). Usa
+    /// o nome do executável via ShellExecute (resolvido pelo App Paths do Windows), então não
+    /// depende de adivinhar o caminho de instalação. Se não conseguir, quem chamou mostra os
+    /// passos manuais.
+    /// </summary>
+    private static bool OpenBrowserPasswordsPage(
+        IReadOnlyList<(string Nome, string ModuleId)> navegadores)
+    {
+        (string Exe, string Url)? alvo =
+            navegadores.Any(browser => browser.ModuleId == "edge")
+                ? ("msedge.exe", "edge://settings/passwords")
+                : navegadores.Any(browser => browser.ModuleId == "chrome")
+                    ? ("chrome.exe", "chrome://settings/passwords")
+                    : navegadores.Any(browser => browser.ModuleId == "firefox")
+                        ? ("firefox.exe", "about:logins")
+                        : null;
+
+        if (alvo is null)
+        {
+            return false;
+        }
+
+        try
+        {
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(
+                alvo.Value.Exe, alvo.Value.Url)
+            {
+                UseShellExecute = true
+            });
+            return true;
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Lembrete, no fim da restauração, de que as senhas do navegador vêm por fora do backup (ver
+    /// <see cref="ConfirmBrowserPasswords"/>). Só aparece quando um navegador foi de fato
+    /// restaurado — senão é ruído.
+    /// </summary>
+    private static ResultSection? BrowserPasswordReminderSection(
+        IEnumerable<ModuleResult> moduleResults)
+    {
+        var navegadores = moduleResults
+            .Where(result => result.Outcome == ModuleOutcome.Applied &&
+                result.ModuleId is "edge" or "chrome" or "firefox")
+            .Select(result => FriendlyModuleName(result.ModuleId))
+            .ToList();
+
+        if (navegadores.Count == 0)
+        {
+            return null;
+        }
+
+        return new ResultSection(
+            "Senhas do navegador",
+            [
+                $"Favoritos e histórico de {string.Join(", ", navegadores)} voltaram, mas as " +
+                "SENHAS salvas não vêm no backup (proteção do Windows).",
+                "Entre na conta de sincronização do navegador para as senhas voltarem, ou importe " +
+                "o arquivo de senhas que foi exportado da máquina antiga."
+            ],
+            ResultTone.Warning);
     }
 
     /// <summary>
@@ -1519,6 +1680,11 @@ public partial class MainWindow : Window
                         ResultTone.Warning));
                 }
 
+                if (BrowserPasswordReminderSection(result.ModuleOutcome.Results) is { } lembreteSenhas)
+                {
+                    sections.Add(lembreteSenhas);
+                }
+
                 sections.Add(new ResultSection(
                     "Próximo passo",
                     ["Reinicie este computador quando for possível para concluir a migração."],
@@ -1629,6 +1795,11 @@ public partial class MainWindow : Window
             if (cleanupLines.Count > 0)
             {
                 sections.Add(new ResultSection("Limpeza corporativa", cleanupLines));
+            }
+
+            if (BrowserPasswordReminderSection(outcome.Results) is { } lembreteSenhas)
+            {
+                sections.Add(lembreteSenhas);
             }
 
             var falhas = outcome.Results.Count(r => r.Outcome == ModuleOutcome.Failed);
